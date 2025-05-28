@@ -1,21 +1,16 @@
-use egui_macroquad::egui;
-use egui_macroquad::egui::Align;
-use egui_macroquad::egui::Frame;
+mod scene;
 use egui_macroquad::egui::ImageSource;
-use egui_macroquad::egui::Layout;
-use egui_macroquad::egui::Vec2;
-use egui_macroquad::egui::Widget;
 use egui_macroquad::egui::ahash::HashMap;
 use egui_macroquad::egui::ahash::HashMapExt;
 use egui_macroquad::egui::include_image;
 use egui_macroquad::egui::mutex::RwLock;
 use futures::SinkExt;
 use futures::StreamExt;
-use image::ImageReader;
+use scene::GameData;
+use scene::LobbyData;
+use scene::Scene;
 use shared::DeckType;
-use shared::PlaceFrom;
 use shared::RelSide;
-use shared::Space;
 use std::collections::VecDeque;
 use std::sync::LazyLock;
 use std::thread;
@@ -24,7 +19,7 @@ use tokio_websockets::Message;
 
 use futures::never::Never;
 use http::Uri;
-use shared::{ClientMsg, LocalState, Side};
+use shared::{ClientMsg, Side};
 use shared::{ServerErr, ServerMsg};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -58,27 +53,11 @@ enum NetRuntimeError {
     ChannelError(ChannelError),
 }
 
-#[derive(Debug, Clone)]
-enum Scene {
-    LobbySelect(LobbyData),
-    Game(GameData),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LobbyData {
-    room: String,
-}
-
-#[derive(Debug, Clone)]
-struct GameData {
-    state: LocalState,
-    local_side: Option<Side>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Image {
     CardBack,
     CardBg,
+    BloodBack,
     Name(String),
 }
 
@@ -87,6 +66,9 @@ static TEXTURES: LazyLock<RwLock<HashMap<Image, ImageSource>>> =
 
 #[macroquad::main("Cassowary")]
 async fn main() {
+    egui_macroquad::cfg(|ctx| {
+        egui_extras::install_image_loaders(ctx);
+    });
     // Here to_serv and from_serv are actually using "serv" to refer to the networking tokio runtime.
     // That's is because the only reason you'd use these is to connect to the server.
     // However I know I will get confused without these comments so have fun
@@ -101,14 +83,15 @@ async fn main() {
             .map_err(NetRuntimeError::ChannelError)
     });
 
-    let mut local_side = Some(Side::Home);
-
     let mut current_scene = Scene::LobbySelect(LobbyData {
         room: String::new(),
     });
     TEXTURES
         .write()
         .insert(Image::CardBack, include_image!("imgs/card_back.png"));
+    TEXTURES
+        .write()
+        .insert(Image::BloodBack, include_image!("imgs/flask_back.png"));
     TEXTURES
         .write()
         .insert(Image::CardBg, include_image!("imgs/cardbg.png"));
@@ -158,6 +141,7 @@ fn process_server_error(msg: ServerErr, current_scene: &mut Scene) {
         ServerErr::NoCardIn(place_from) => println!("No card in {place_from:?}"),
         ServerErr::SideOccupied(side) => println!("{side:?} is already occupied"),
         ServerErr::AlreadyInGame { action } => println!("Already in game"),
+        ServerErr::GameIsFull => println!("Game is full"),
     }
 }
 
@@ -175,16 +159,16 @@ fn process_server_message(
         match msg {
             ServerMsg::UpdateHand(vec) => board_state.hand = vec,
             ServerMsg::UpdateSpaces { home_row, away_row } => {
-                board_state.home_row = *home_row;
-                board_state.away_row = *away_row;
+                board_state.local_row = *home_row;
+                board_state.distant_row = *away_row;
             }
             ServerMsg::UpdateDiscard(side, vec) => match side {
-                Side::Home => board_state.home_state.discard = vec,
-                Side::Away => board_state.away_state.discard = vec,
+                RelSide::Same => board_state.local_state.discard = vec,
+                RelSide::Other => board_state.distant_state.discard = vec,
             },
             ServerMsg::UpdateTimeline(side, vec) => match side {
-                Side::Home => board_state.home_state.timeline = vec,
-                Side::Away => board_state.away_state.timeline = vec,
+                RelSide::Same => board_state.local_state.timeline = vec,
+                RelSide::Other => board_state.distant_state.timeline = vec,
             },
             ServerMsg::BeginSearch(vec) => todo!(),
             ServerMsg::UpdateState(new_state) => *board_state = *new_state,
@@ -202,7 +186,7 @@ fn process_server_message(
         ServerMsg::UpdateState(..) => panic!("??"),
         ServerMsg::RoomCreated => (),
         ServerMsg::JoinedRoom(state) => {
-            to_server.send(ClientMsg::PlayAs(Side::Home)).unwrap();
+            to_server.send(ClientMsg::PlayAs).unwrap();
             to_server
                 .send(ClientMsg::SetDeck(
                     DeckType::Main,
@@ -228,10 +212,7 @@ fn process_server_message(
                     ]),
                 ))
                 .unwrap();
-            *current_scene = Scene::Game(GameData {
-                state: *state,
-                local_side: None,
-            })
+            *current_scene = Scene::Game(GameData { state: *state })
         }
     }
 }
@@ -271,300 +252,15 @@ async fn game_rt(
     }
 }
 
-impl Scene {
-    async fn draw(&mut self, to_server: &UnboundedSender<ClientMsg>) {
-        match self {
-            Scene::LobbySelect(data) => {
-                if let Some(a) = draw_lobby_select(to_server, data) {
-                    *self = a
-                }
-            }
-            Scene::Game(data) => draw_game(to_server, data).await,
-        }
-    }
-}
-
-fn draw_lobby_select(
-    to_server: &UnboundedSender<ClientMsg>,
-    scene: &mut LobbyData,
-) -> Option<Scene> {
-    let mut next_scene = None;
-    egui_macroquad::ui(|ctx| {
-        // Get the screen size from egui
-        let screen_rect = ctx.screen_rect();
-        let window_size = egui::vec2(300.0, 100.0);
-
-        // Calculate center position
-        let center_pos = screen_rect.center() - window_size / 2.0;
-        let win = egui::Window::new("Cassowary")
-            .resizable(true)
-            .collapsible(false)
-            .movable(false)
-            .resizable(false)
-            .current_pos(center_pos);
-
-        win.show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut scene.room);
-                    let join_room = ui.button("Join Room");
-                    if join_room.clicked() {
-                        to_server
-                            .send(ClientMsg::JoinRoom(scene.room.clone()))
-                            .unwrap();
-                    }
-                });
-                let create_room = ui.button("Create Room");
-
-                if create_room.clicked() {
-                    to_server.send(ClientMsg::CreateRoom).unwrap();
-                }
-            })
-        });
-    });
-
-    next_scene
-}
-
 const SIDEBAR_PADDING: f32 = 5.0;
 const CARD_WIDTH: f32 = 80.0;
 const CARD_HEIGHT: f32 = CARD_WIDTH * (3.5 / 2.5);
 const SIDEBAR_WIDTH: f32 = SIDEBAR_PADDING * 2. + CARD_WIDTH;
 const HANDBAR_HEIGHT: f32 = SIDEBAR_PADDING * 2. + CARD_HEIGHT;
 
-async fn draw_game(to_server: &UnboundedSender<ClientMsg>, data: &mut GameData) {
-    egui_macroquad::ui(|ctx| {
-        egui_extras::install_image_loaders(ctx);
-        egui::SidePanel::left("sidebar")
-            .default_width(SIDEBAR_WIDTH)
-            .show(ctx, |ui| {
-                let draw_button = ui.button("MAIN");
-                if draw_button.clicked() {
-                    to_server
-                        .send(ClientMsg::Draw(RelSide::Same, DeckType::Main))
-                        .unwrap();
-                }
-                let draw_button = ui.button("BLOOD");
-                if draw_button.clicked() {
-                    to_server
-                        .send(ClientMsg::Draw(RelSide::Same, DeckType::Blood))
-                        .unwrap();
-                }
-                let frame = Frame::new();
-                let (_, dropped_load) = ui.dnd_drop_zone::<PlaceFrom, _>(frame, |ui| {
-                    ui.label("DISCARD");
-                });
-
-                if let Some(load) = dropped_load {
-                    to_server
-                        .send(ClientMsg::Move {
-                            from: *load,
-                            to: shared::PlaceTo::Discard,
-                        })
-                        .unwrap();
-                }
-            });
-        egui::TopBottomPanel::bottom("hand")
-            .default_height(SIDEBAR_WIDTH)
-            .show(ctx, |ui| {
-                let frame = Frame::new();
-                let (_, moved) = ui.dnd_drop_zone::<PlaceFrom, _>(frame, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for (idx, card) in data.state.hand.iter().enumerate() {
-                            let id = format!("hand_{idx}").into();
-                            ui.dnd_drag_source(id, PlaceFrom::Hand(idx), |ui| {
-                                Frame::new().show(ui, |ui| {
-                                    let image = {
-                                        let a = TEXTURES.read();
-                                        a.get(&Image::Name(card.clone()))
-                                            .unwrap_or(a.get(&Image::CardBack).unwrap())
-                                            .clone()
-                                    };
-                                    Frame::new().show(ui, |ui| {
-                                        ui.set_max_height(CARD_HEIGHT);
-                                        ui.set_max_width(CARD_WIDTH);
-                                        ui.add(egui::Image::new(image));
-                                    });
-                                });
-                            });
-                        }
-                        ui.add_space(ui.available_width());
-                    });
-                });
-
-                if let Some(moved) = moved {
-                    to_server
-                        .send(ClientMsg::Move {
-                            from: *moved,
-                            to: shared::PlaceTo::Hand,
-                        })
-                        .unwrap();
-                }
-            });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let height = ui.available_height() / 2.;
-            ui.add_space(height - CARD_HEIGHT);
-            ui.horizontal(|ui| {
-                let width = ui.available_width() / 2.;
-                ui.add_space(width - (CARD_WIDTH + 2.) * 2.);
-                egui::Grid::new("spaces")
-                    .spacing(Vec2::new(2., 2.))
-                    .show(ui, |ui| {
-                        for space in [Space::First, Space::Second, Space::Third, Space::Fourth] {
-                            let frame = Frame::new();
-                            let (_, dropped_item) = ui.dnd_drop_zone::<PlaceFrom, _>(frame, |ui| {
-                                if let Some(card) = &data.state.away_row[space] {
-                                    let id = format!("space_away_{space:?}").into();
-                                    ui.dnd_drag_source(
-                                        id,
-                                        PlaceFrom::Space(Side::Away, space),
-                                        |ui| {
-                                            let image = {
-                                                let a = TEXTURES.read();
-                                                a.get(&Image::Name(card.name.clone()))
-                                                    .unwrap_or(a.get(&Image::CardBack).unwrap())
-                                                    .clone()
-                                            };
-                                            Frame::new().show(ui, |ui| {
-                                                ui.set_max_height(CARD_HEIGHT);
-                                                ui.set_max_width(CARD_WIDTH);
-                                                ui.add(egui::Image::new(image));
-                                            });
-                                        },
-                                    );
-                                } else {
-                                    Frame::new().show(ui, |ui| {
-                                        ui.set_max_height(CARD_HEIGHT);
-                                        ui.set_max_width(CARD_WIDTH);
-                                        ui.add(egui::Image::new(
-                                            TEXTURES.read()[&Image::CardBg].clone(),
-                                        ));
-                                    });
-                                }
-                            });
-
-                            if let Some(dropped_item) = dropped_item {
-                                to_server
-                                    .send(ClientMsg::Move {
-                                        from: *dropped_item,
-                                        to: shared::PlaceTo::Space(Side::Away, space, true),
-                                    })
-                                    .unwrap();
-                            }
-                        }
-                        ui.end_row();
-                        for space in [Space::First, Space::Second, Space::Third, Space::Fourth] {
-                            let frame = Frame::new();
-                            let (_, dropped_item) = ui.dnd_drop_zone::<PlaceFrom, _>(frame, |ui| {
-                                if let Some(card) = &data.state.home_row[space] {
-                                    let id = format!("space_home_{space:?}").into();
-                                    ui.dnd_drag_source(
-                                        id,
-                                        PlaceFrom::Space(Side::Home, space),
-                                        |ui| {
-                                            let image = {
-                                                let a = TEXTURES.read();
-                                                a.get(&Image::Name(card.name.clone()))
-                                                    .unwrap_or(a.get(&Image::CardBack).unwrap())
-                                                    .clone()
-                                            };
-                                            Frame::new().show(ui, |ui| {
-                                                ui.set_max_height(CARD_HEIGHT);
-                                                ui.set_max_width(CARD_WIDTH);
-                                                ui.add(egui::Image::new(image));
-                                            });
-                                        },
-                                    );
-                                } else {
-                                    Frame::new().show(ui, |ui| {
-                                        ui.set_max_height(CARD_HEIGHT);
-                                        ui.set_max_width(CARD_WIDTH);
-                                        ui.add(egui::Image::new(
-                                            TEXTURES.read()[&Image::CardBg].clone(),
-                                        ));
-                                    });
-                                }
-                            });
-
-                            if let Some(dropped_item) = dropped_item {
-                                to_server
-                                    .send(ClientMsg::Move {
-                                        from: *dropped_item,
-                                        to: shared::PlaceTo::Space(Side::Home, space, true),
-                                    })
-                                    .unwrap();
-                            }
-                        }
-                    });
-            });
-        });
-    });
-    return;
-
-    let screen_height = screen_height();
-    let screen_width = screen_width();
-    let draw_btn_rect = Rect {
-        x: SIDEBAR_PADDING,
-        y: screen_height - CARD_HEIGHT - SIDEBAR_PADDING,
-        w: CARD_WIDTH,
-        h: CARD_HEIGHT,
-    };
-    draw_rectangle(0., 0., SIDEBAR_WIDTH, screen_height, RED);
-    draw_rectangle(
-        SIDEBAR_PADDING,
-        screen_height - CARD_HEIGHT - SIDEBAR_PADDING,
-        CARD_WIDTH,
-        CARD_HEIGHT,
-        YELLOW,
-    );
-    draw_rectangle(
-        SIDEBAR_PADDING * 2. + CARD_WIDTH,
-        screen_height - HANDBAR_HEIGHT,
-        screen_width - SIDEBAR_WIDTH,
-        HANDBAR_HEIGHT,
-        GREEN,
-    );
-
-    for (idx, card) in data.state.hand.iter().enumerate() {
-        let card_x = SIDEBAR_WIDTH + SIDEBAR_PADDING + (CARD_HEIGHT + SIDEBAR_PADDING) * idx as f32;
-        let card_y = screen_height - HANDBAR_HEIGHT + SIDEBAR_PADDING;
-        draw_rectangle(card_x, card_y, CARD_WIDTH, CARD_HEIGHT, WHITE);
-        draw_text(card, card_x, card_y + 9., 18., BLACK);
-    }
-
-    if is_mouse_button_pressed(MouseButton::Left) {
-        let mpos = mouse_position();
-        let mpos = vec2(mpos.0, mpos.1);
-        if draw_btn_rect.contains(mpos) {
-            to_server
-                .send(ClientMsg::Draw(RelSide::Same, DeckType::Main))
-                .unwrap();
-        }
-    }
-}
-
 fn get_filegarden_link(name: &str) -> String {
     format!(
         "https://file.garden/ZJSEzoaUL3bz8vYK/bloodlesscards/{}.png",
         name.replace(' ', "").replace('ä', "a")
     )
-}
-
-pub struct CardDisplay;
-
-impl Widget for CardDisplay {
-    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let image = {
-            let a = TEXTURES.read();
-            a.get(&Image::Name(card.name.clone()))
-                .unwrap_or(a.get(&Image::CardBack).unwrap())
-                .clone()
-        };
-        Frame::new().show(ui, |ui| {
-            ui.set_max_height(CARD_HEIGHT);
-            ui.set_max_width(CARD_WIDTH);
-            ui.add(egui::Image::new(image));
-        });
-    }
 }

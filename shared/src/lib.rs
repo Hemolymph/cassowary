@@ -12,8 +12,8 @@ pub enum ServerMsg {
         home_row: Box<Row>,
         away_row: Box<Row>,
     },
-    UpdateDiscard(Side, Vec<String>),
-    UpdateTimeline(Side, Vec<String>),
+    UpdateDiscard(RelSide, Vec<String>),
+    UpdateTimeline(RelSide, Vec<String>),
     BeginSearch(Vec<String>),
     UpdateState(Box<LocalState>),
     RoomCreated,
@@ -28,6 +28,7 @@ pub enum ServerErr {
     NoPlayerInSide(Side),
     NoCardIn(PlaceFrom),
     SideOccupied(Side),
+    GameIsFull,
     AlreadyInGame { action: String },
 }
 
@@ -59,7 +60,7 @@ impl ServerMsg {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ClientMsg {
     Draw(RelSide, DeckType),
     Move { from: PlaceFrom, to: PlaceTo },
@@ -69,7 +70,7 @@ pub enum ClientMsg {
     CreateRoom,
     SetDeck(DeckType, VecDeque<String>),
     JoinRoom(String),
-    PlayAs(Side),
+    PlayAs,
 }
 
 impl ClientMsg {
@@ -81,7 +82,7 @@ impl ClientMsg {
             ClientMsg::RequestSearch => true,
             ClientMsg::Update => true,
             ClientMsg::SetDeck(..) => true,
-            ClientMsg::PlayAs(..) => true,
+            ClientMsg::PlayAs => true,
             ClientMsg::CreateRoom => false,
             ClientMsg::JoinRoom(..) => false,
         }
@@ -97,13 +98,13 @@ impl ClientMsg {
             ClientMsg::CreateRoom => "create room",
             ClientMsg::SetDeck(deck_type, vec_deque) => "set deck",
             ClientMsg::JoinRoom(_) => "join room",
-            ClientMsg::PlayAs(side) => "play as side",
+            ClientMsg::PlayAs => "play in game",
         }
     }
 }
 
 /// Places cards can be sent to in the deck.
-#[derive(Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum DeckTo {
     Top,
     Bottom,
@@ -112,11 +113,11 @@ pub enum DeckTo {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum PlaceFrom {
     Hand(usize),
-    Space(Side, Space),
-    Discard(usize),
+    Space(RelSide, Space),
+    Discard(RelSide, usize),
     Aside(usize),
-    Timeline(usize),
-    Deck(Side, DeckType, usize),
+    Timeline(RelSide, usize),
+    Deck(RelSide, DeckType, usize),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -127,15 +128,15 @@ pub enum Space {
     Fourth = 3,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 /// Sinde Liberate is not a place, this does not accurately represent Bloodless move destinations.
 pub enum PlaceTo {
     Hand,
-    Space(Side, Space, bool),
-    Discard,
+    Space(RelSide, Space, bool),
+    Discard(RelSide),
     Aside,
-    Timeline,
-    Deck(DeckTo, Side, DeckType),
+    Timeline(RelSide),
+    Deck(DeckTo, RelSide, DeckType),
     /// While not technically a place, this works
     Liberate,
 }
@@ -194,6 +195,21 @@ pub struct PlayerState {
     pub timeline: Vec<String>,
 }
 
+impl PlayerState {
+    pub fn get_deck(&self, which: DeckType) -> &VecDeque<String> {
+        match which {
+            DeckType::Blood => &self.blood_deck,
+            DeckType::Main => &self.main_deck,
+        }
+    }
+    pub fn get_deck_mut(&mut self, which: DeckType) -> &mut VecDeque<String> {
+        match which {
+            DeckType::Blood => &mut self.blood_deck,
+            DeckType::Main => &mut self.main_deck,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum DeckType {
     Blood,
@@ -204,6 +220,15 @@ pub enum DeckType {
 pub enum Side {
     Home,
     Away,
+}
+
+impl Side {
+    pub fn opposite(self) -> Self {
+        match self {
+            Side::Home => Side::Away,
+            Side::Away => Side::Home,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -232,29 +257,68 @@ pub struct LocalPlayer {
 /// Represents what is known about the game state
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LocalState {
-    pub home_state: LocalPlayer,
-    pub away_state: LocalPlayer,
-    pub home_row: Row,
-    pub away_row: Row,
+    pub local_state: LocalPlayer,
+    pub distant_state: LocalPlayer,
+    pub local_row: Row,
+    pub distant_row: Row,
     pub hand: Vec<String>,
     pub floating_cards: Vec<(String, (usize, usize))>,
 }
 
+impl LocalState {
+    pub fn get_row(&self, side: RelSide) -> &Row {
+        match side {
+            RelSide::Same => &self.local_row,
+            RelSide::Other => &self.distant_row,
+        }
+    }
+    pub fn get_player(&self, side: RelSide) -> &LocalPlayer {
+        match side {
+            RelSide::Same => &self.local_state,
+            RelSide::Other => &self.distant_state,
+        }
+    }
+}
+
 impl GameState {
     pub fn create_local_for(&self, side: Option<Side>) -> LocalState {
-        let hand = match side {
-            Some(Side::Home) => self.home_state.hand.clone(),
-            Some(Side::Away) => self.away_state.hand.clone(),
-            None => vec![],
-        };
+        let local_state = self.get_state(side.unwrap_or(Side::Home));
+        let away_state = self.get_state(side.unwrap_or(Side::Home).opposite());
+        let local_row = self.get_row(side.unwrap_or(Side::Home));
+        let away_row = self.get_row(side.unwrap_or(Side::Home).opposite());
 
         LocalState {
-            home_state: self.home_state.create_local(),
-            away_state: self.away_state.create_local(),
-            home_row: self.home_row.clone(),
-            away_row: self.away_row.clone(),
-            hand,
+            local_state: local_state.create_local(),
+            distant_state: away_state.create_local(),
+            local_row: local_row.clone(),
+            distant_row: away_row.clone(),
+            hand: local_state.hand.clone(),
             floating_cards: vec![],
+        }
+    }
+
+    pub fn get_row(&self, side: Side) -> &Row {
+        match side {
+            Side::Home => &self.home_row,
+            Side::Away => &self.away_row,
+        }
+    }
+    pub fn get_row_mut(&mut self, side: Side) -> &mut Row {
+        match side {
+            Side::Home => &mut self.home_row,
+            Side::Away => &mut self.away_row,
+        }
+    }
+    pub fn get_state(&self, side: Side) -> &PlayerState {
+        match side {
+            Side::Home => &self.home_state,
+            Side::Away => &self.away_state,
+        }
+    }
+    pub fn get_state_mut(&mut self, side: Side) -> &mut PlayerState {
+        match side {
+            Side::Home => &mut self.home_state,
+            Side::Away => &mut self.away_state,
         }
     }
 }
@@ -269,8 +333,17 @@ impl PlayerState {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelSide {
     Same,
     Other,
+}
+
+impl RelSide {
+    pub fn make_real(self, local: Side) -> Side {
+        match self {
+            RelSide::Same => local,
+            RelSide::Other => local.opposite(),
+        }
+    }
 }
