@@ -54,14 +54,14 @@ enum NetRuntimeError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Image {
+enum ImageName {
     CardBack,
     CardBg,
     BloodBack,
     Name(String),
 }
 
-static TEXTURES: LazyLock<RwLock<HashMap<Image, ImageSource>>> =
+static TEXTURES: LazyLock<RwLock<HashMap<ImageName, ImageSource>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 #[macroquad::main("Cassowary")]
@@ -88,23 +88,23 @@ async fn main() {
     });
     TEXTURES
         .write()
-        .insert(Image::CardBack, include_image!("imgs/card_back.png"));
+        .insert(ImageName::CardBack, include_image!("imgs/card_back.png"));
     TEXTURES
         .write()
-        .insert(Image::BloodBack, include_image!("imgs/flask_back.png"));
+        .insert(ImageName::BloodBack, include_image!("imgs/flask_back.png"));
     TEXTURES
         .write()
-        .insert(Image::CardBg, include_image!("imgs/cardbg.png"));
+        .insert(ImageName::CardBg, include_image!("imgs/cardbg.png"));
 
     let image = ImageSource::Uri(get_filegarden_link("BloodFlask").into());
 
     TEXTURES
         .write()
-        .insert(Image::Name("BloodFlask".to_string()), image);
+        .insert(ImageName::Name("BloodFlask".to_string()), image);
     let image = ImageSource::Uri(get_filegarden_link("Daemon").into());
     TEXTURES
         .write()
-        .insert(Image::Name("Daemon".to_string()), image);
+        .insert(ImageName::Name("Daemon".to_string()), image);
 
     loop {
         if runtime_task.is_finished() {
@@ -239,7 +239,7 @@ async fn game_rt(
                 to_local.send(msg).map_err(|_| ChannelError::NetworkToLocalClosed)?;
             },
             message = from_local.recv() => {
-                let Some(message) = message else { panic!() };
+                let Some(message) = message else { return Err(ChannelError::LocalToNetworkClosed) };
                 let msg = serde_json::to_string_pretty(&message);
                 match msg {
                     Ok(msg) => client.send(Message::text(msg)).await.map_err(|_| ChannelError::NetworkToServerError)?,
