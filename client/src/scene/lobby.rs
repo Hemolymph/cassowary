@@ -42,7 +42,9 @@ pub fn draw_lobby_select(
                 let create_room = ui.button("Create Room");
 
                 if create_room.clicked() {
-                    to_server.send(ClientMsg::CreateRoom).unwrap();
+                    to_server
+                        .send(ClientMsg::CreateRoom(scene.room.clone()))
+                        .unwrap();
                 }
             })
         });

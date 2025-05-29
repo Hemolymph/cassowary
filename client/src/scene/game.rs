@@ -1,24 +1,124 @@
+use std::collections::VecDeque;
+
 use egui_macroquad::egui::{
     self, Context, CursorIcon, DragAndDrop, Frame, Id, ImageButton, InnerResponse, LayerId, Layout,
     Order, Response, Sense, UiBuilder, Vec2, Widget, emath::TSTransform,
 };
-use shared::{ClientMsg, DeckType, Hidden, LocalCard, LocalState, PlaceFrom, RelSide, Space};
+use macroquad::input::{KeyCode, is_key_down};
+use shared::{
+    ClientMsg, DeckType, Hidden, LocalCard, LocalState, NamedCardId, PlaceFrom, RelSide, Space,
+};
+use shrek_deck::parser::parse_line;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{CARD_HEIGHT, CARD_WIDTH, HANDBAR_HEIGHT, ImageName, SIDEBAR_WIDTH, TEXTURES};
+use crate::{
+    BloodlessCard, CARD_HEIGHT, CARD_WIDTH, HANDBAR_HEIGHT, ImageName, SIDEBAR_WIDTH, TEXTURES,
+};
 
 #[derive(Debug, Clone)]
 pub struct GameData {
     pub state: LocalState,
+    pub editing_deck: bool,
+    pub deck: DeckType,
+    pub marrow_main: String,
+    pub marrow_blood: String,
+    pub marrow_error: String,
+    pub seaching: Vec<NamedCardId>,
 }
 
 pub async fn draw_game(to_server: &UnboundedSender<ClientMsg>, data: &mut GameData) {
     egui_macroquad::ui(|ctx| {
+        egui::TopBottomPanel::top("topbar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.menu_button("Deck", |ui| {
+                    let blood_deck = ui.button("Blood Deck");
+                    let main_deck = ui.button("Main Deck");
+
+                    if blood_deck.clicked() {
+                        data.editing_deck = true;
+                        data.deck = DeckType::Blood;
+                        data.marrow_error = String::new();
+                    }
+                    if main_deck.clicked() {
+                        data.editing_deck = true;
+                        data.deck = DeckType::Main;
+                        data.marrow_error = String::new();
+                    }
+                });
+            });
+        });
         sidebar(ctx, to_server, data);
         handbar(ctx, to_server, data);
         timeline(ctx, RelSide::Same, data, to_server);
         timeline(ctx, RelSide::Other, data, to_server);
         middle(ctx, to_server, data);
+
+        if data.editing_deck {
+            egui::Window::new("Deck Editor")
+                .resizable(true)
+                .constrain(false)
+                .open(&mut data.editing_deck)
+                .show(ctx, |ui| {
+                    ui.label("Editing your deck");
+                    let marrow = match data.deck {
+                        DeckType::Blood => &mut data.marrow_blood,
+                        DeckType::Main => &mut data.marrow_main,
+                    };
+                    ui.code_editor(marrow);
+                    ui.label(data.marrow_error.clone());
+                    if ui.button("Done!").clicked() {
+                        let mut deck = vec![];
+                        for line in marrow.lines() {
+                            if line.is_empty() {
+                                continue;
+                            }
+
+                            match parse_line::<BloodlessCard>(line) {
+                                Ok(a) => {
+                                    TEXTURES.write().set_texture(a.card.name.clone(), ui.ctx());
+                                    for _ in 0..a.amount {
+                                        deck.push(a.card.name.clone());
+                                    }
+                                }
+                                Err(_) => {
+                                    data.marrow_error = "Error parsing Marrow syntax".to_string()
+                                }
+                            }
+                        }
+                        if data.marrow_error.is_empty() {
+                            to_server
+                                .send(ClientMsg::SetDeck(data.deck, VecDeque::from(deck)))
+                                .unwrap()
+                        }
+                    }
+                });
+        }
+
+        if !data.seaching.is_empty() {
+            egui::Window::new("Searching...")
+                .resizable(true)
+                .scroll([false, true])
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        egui::Grid::new("cardsearch").show(ui, |ui| {
+                            for (idx, card) in data.seaching.iter().enumerate() {
+                                let id = format!("searching_{:?}", card.id).into();
+                                let zone = PlaceFrom::Deck(RelSide::Same, DeckType::Main, card.id);
+                                drag(ui, id, zone, |ui| {
+                                    ui.add(CardDisplay::new(card.clone(), to_server).at_zone(zone))
+                                });
+                                if idx % 8 == 7 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                    });
+                    if ui.button("Done").clicked() {
+                        data.seaching = vec![];
+                        to_server.send(ClientMsg::FinishSearch).unwrap();
+                    };
+                });
+        }
     });
 }
 
@@ -193,7 +293,7 @@ fn timeline(
                         .enumerate()
                     {
                         let id = format!("timeline_{side:?}_{idx}").into();
-                        let zone = PlaceFrom::Timeline(side, idx);
+                        let zone = PlaceFrom::Timeline(side, card.id);
                         drag(ui, id, zone, |ui| {
                             ui.add(CardDisplay::new(card, to_server).at_zone(zone))
                         });
@@ -210,6 +310,9 @@ fn timeline(
                     to: shared::PlaceTo::Timeline(side),
                 })
                 .unwrap();
+            if let Some(card) = data.state.pop_card(*drop) {
+                data.state.push_card(card, shared::PlaceTo::Timeline(side));
+            }
         }
     });
 }
@@ -256,7 +359,7 @@ fn board_row(
                     let id = format!("space_{side:?}_{space:?}").into();
                     let zone = PlaceFrom::Space(side, space);
                     drag(ui, id, PlaceFrom::Space(side, space), |ui| {
-                        ui.add(CardDisplay::new(card.clone().to_local(), to_server).at_zone(zone))
+                        ui.add(CardDisplay::new(card.clone(), to_server).at_zone(zone))
                     });
                 } else {
                     Frame::new().show(ui, |ui| {
@@ -273,9 +376,15 @@ fn board_row(
                 to_server
                     .send(ClientMsg::Move {
                         from: *dropped_item,
-                        to: shared::PlaceTo::Space(side, space, false),
+                        to: shared::PlaceTo::Space(side, space, is_key_down(KeyCode::LeftShift)),
                     })
                     .unwrap();
+                if let Some(card) = data.state.pop_card(*dropped_item) {
+                    data.state.push_card(
+                        card,
+                        shared::PlaceTo::Space(side, space, is_key_down(KeyCode::LeftShift)),
+                    );
+                }
             }
             if side == RelSide::Same {
                 ui.label(text);
@@ -290,10 +399,23 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
         .show(ctx, |ui| {
             ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
                 let (_, dropped) = ui.dnd_drop_zone::<PlaceFrom, _>(Frame::new(), |ui| {
-                    let draw_button = ui.add(ImageButton::new(
-                        TEXTURES.read().get_texture(ImageName::CardBack).clone(),
+                    let main_draw = ui.add(ImageButton::new(
+                        TEXTURES
+                            .read()
+                            .get_texture(data.state.local_state.main_deck_top.clone().into())
+                            .clone(),
                     ));
-                    if draw_button.clicked() {
+                    main_draw.context_menu(|ui| {
+                        if ui.button("Shuffle").clicked() {
+                            to_server.send(ClientMsg::Shuffle(DeckType::Main)).unwrap();
+                        }
+                        if ui.button("Search").clicked() {
+                            to_server
+                                .send(ClientMsg::RequestSearch(DeckType::Main))
+                                .unwrap();
+                        }
+                    });
+                    if main_draw.clicked() {
                         to_server
                             .send(ClientMsg::Draw(RelSide::Same, DeckType::Main))
                             .unwrap();
@@ -309,17 +431,35 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                                 DeckType::Main,
                             ),
                         })
-                        .unwrap()
+                        .unwrap();
+                    if let Some(card) = data.state.pop_card(*dropped) {
+                        data.state.push_card(
+                            card,
+                            shared::PlaceTo::Deck(
+                                shared::DeckTo::Top,
+                                RelSide::Same,
+                                DeckType::Main,
+                            ),
+                        );
+                    }
                 }
                 let (_, dropped) = ui.dnd_drop_zone::<PlaceFrom, _>(Frame::new(), |ui| {
-                    let draw_button = ui.add(ImageButton::new(
-                        TEXTURES.read().get_texture(ImageName::BloodBack).clone(),
+                    let blood_draw = ui.add(ImageButton::new(
+                        TEXTURES
+                            .read()
+                            .get_texture(data.state.local_state.blood_deck_top.clone().into())
+                            .clone(),
                     ));
-                    if draw_button.clicked() {
+                    if blood_draw.clicked() {
                         to_server
                             .send(ClientMsg::Draw(RelSide::Same, DeckType::Blood))
                             .unwrap();
                     }
+                    blood_draw.context_menu(|ui| {
+                        if ui.button("Shuffle").clicked() {
+                            to_server.send(ClientMsg::Shuffle(DeckType::Blood)).unwrap();
+                        }
+                    });
                 });
                 if let Some(dropped) = dropped {
                     to_server
@@ -331,12 +471,22 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                                 DeckType::Blood,
                             ),
                         })
-                        .unwrap()
+                        .unwrap();
+                    if let Some(card) = data.state.pop_card(*dropped) {
+                        data.state.push_card(
+                            card,
+                            shared::PlaceTo::Deck(
+                                shared::DeckTo::Top,
+                                RelSide::Same,
+                                DeckType::Blood,
+                            ),
+                        );
+                    }
                 }
                 let frame = Frame::new();
                 let (_, dropped_load) = ui.dnd_drop_zone::<PlaceFrom, _>(frame, |ui| {
                     if let Some(card) = data.state.local_state.discard.first() {
-                        let zone = PlaceFrom::Discard(RelSide::Same, 0);
+                        let zone = PlaceFrom::Discard(RelSide::Same, card.id);
                         drag(ui, "discard".into(), zone, |ui| {
                             ui.add(CardDisplay::new(card.clone(), to_server).at_zone(zone))
                         });
@@ -358,11 +508,15 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                             to: shared::PlaceTo::Discard(RelSide::Same),
                         })
                         .unwrap();
+                    if let Some(card) = data.state.pop_card(*load) {
+                        data.state
+                            .push_card(card, shared::PlaceTo::Discard(RelSide::Same));
+                    }
                 }
                 ui.add_space(ui.available_height() - CARD_HEIGHT);
                 let (_, dropped_load) = ui.dnd_drop_zone::<PlaceFrom, _>(frame, |ui| {
                     if let Some(card) = data.state.distant_state.discard.first() {
-                        let zone = PlaceFrom::Discard(RelSide::Other, 0);
+                        let zone = PlaceFrom::Discard(RelSide::Other, card.id);
                         drag(ui, "discard_away".into(), zone, |ui| {
                             ui.add(CardDisplay::new(card.clone(), to_server).at_zone(zone))
                         });
@@ -384,6 +538,10 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                             to: shared::PlaceTo::Discard(RelSide::Other),
                         })
                         .unwrap();
+                    if let Some(card) = data.state.pop_card(*load) {
+                        data.state
+                            .push_card(card, shared::PlaceTo::Discard(RelSide::Other));
+                    }
                 }
             });
         });
@@ -400,8 +558,8 @@ fn handbar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                     ui.set_min_height(HANDBAR_HEIGHT);
                     for (idx, card) in data.state.hand.iter().enumerate() {
                         let id = format!("hand_{idx}").into();
-                        let zone = PlaceFrom::Hand(idx);
-                        drag(ui, id, PlaceFrom::Hand(idx), |ui| {
+                        let zone = PlaceFrom::Hand(card.id);
+                        drag(ui, id, PlaceFrom::Hand(card.id), |ui| {
                             Frame::new()
                                 .show(ui, |ui| {
                                     ui.add(CardDisplay::new(card.clone(), to_server).at_zone(zone))
@@ -423,6 +581,9 @@ fn handbar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                         to: shared::PlaceTo::Hand,
                     })
                     .unwrap();
+                if let Some(card) = data.state.pop_card(*moved) {
+                    data.state.push_card(card, shared::PlaceTo::Hand);
+                }
             }
         });
 }

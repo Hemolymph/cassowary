@@ -2,9 +2,7 @@ mod scene;
 use egui_macroquad::egui;
 use egui_macroquad::egui::Context;
 use egui_macroquad::egui::ImageSource;
-use egui_macroquad::egui::TextureOptions;
 use egui_macroquad::egui::ahash::HashMap;
-use egui_macroquad::egui::ahash::HashMapExt;
 use egui_macroquad::egui::include_image;
 use egui_macroquad::egui::mutex::RwLock;
 use futures::SinkExt;
@@ -13,8 +11,10 @@ use scene::GameData;
 use scene::LobbyData;
 use scene::Scene;
 use shared::DeckType;
+use shared::LocalDeckTop;
 use shared::RelSide;
-use std::collections::VecDeque;
+use shrek_deck::GetCardInfo;
+use shrek_deck::tts::CardShape;
 use std::sync::LazyLock;
 use std::thread;
 use tokio::select;
@@ -35,6 +35,35 @@ use tokio::{
 };
 
 type ComResult<T> = Result<T, CommunicationError>;
+
+#[derive(Clone)]
+struct BloodlessCard {
+    name: String,
+}
+
+impl GetCardInfo for BloodlessCard {
+    fn get_name(&self) -> &str {
+        &self.name
+    }
+
+    fn get_front_image(&self) -> Result<String, shrek_deck::CardError> {
+        Ok(get_filegarden_link(self.get_name()))
+    }
+
+    fn get_back_image(&self) -> Result<String, shrek_deck::CardError> {
+        Ok("https://file.garden/ZJSEzoaUL3bz8vYK/bloodlesscards/00%20back.png".to_string())
+    }
+
+    fn get_card_shape(&self) -> Result<CardShape, shrek_deck::CardError> {
+        Ok(CardShape::RoundedRectangle)
+    }
+
+    fn parse(string: &str) -> Result<Self, shrek_deck::parser::ParseError> {
+        Ok(BloodlessCard {
+            name: string.to_owned(),
+        })
+    }
+}
 
 #[derive(Debug)]
 enum CommunicationError {
@@ -64,6 +93,16 @@ enum ImageName {
     Name(String),
 }
 
+impl From<LocalDeckTop> for ImageName {
+    fn from(value: LocalDeckTop) -> Self {
+        match value {
+            LocalDeckTop::Empty => Self::CardBg,
+            LocalDeckTop::Card => Self::CardBack,
+            LocalDeckTop::Revealed(card) => Self::Name(card),
+        }
+    }
+}
+
 #[derive(Default)]
 struct Resources<'a> {
     pub textures: HashMap<ImageName, ImageSource<'a>>,
@@ -84,10 +123,13 @@ impl<'a> Resources<'a> {
             .unwrap();
         self.textures.insert(ImageName::Name(path.clone()), source);
     }
-    fn get_texture(&self, image: ImageName) -> &ImageSource<'a> {
-        self.textures
-            .get(&image)
-            .unwrap_or(self.textures.get(&ImageName::CardBack).unwrap())
+    fn get_texture(&self, image: ImageName) -> ImageSource<'a> {
+        match image {
+            ImageName::CardBack => include_image!("imgs/card_back.png"),
+            ImageName::BloodBack => include_image!("imgs/flask_back.png"),
+            ImageName::CardBg => include_image!("imgs/cardbg.png"),
+            ImageName::Name(path) => ImageSource::Uri(get_filegarden_link(&path).into()),
+        }
     }
 }
 
@@ -165,6 +207,7 @@ fn process_server_error(msg: ServerErr, current_scene: &mut Scene) {
         ServerErr::SideOccupied(side) => println!("{side:?} is already occupied"),
         ServerErr::AlreadyInGame { action } => println!("Already in game"),
         ServerErr::GameIsFull => println!("Game is full"),
+        ServerErr::RoomAlreadyExist => println!("Room alrady exist"),
     }
 }
 
@@ -180,7 +223,11 @@ fn process_server_message(
     if msg.is_game_action() {
         let board_state = board_state.unwrap();
         match msg {
-            ServerMsg::UpdateHand(vec) => board_state.hand = vec,
+            ServerMsg::UpdateHand(vec, blood_top, main_top) => {
+                board_state.local_state.main_deck_top = main_top;
+                board_state.local_state.blood_deck_top = blood_top;
+                board_state.hand = vec;
+            }
             ServerMsg::UpdateSpaces { home_row, away_row } => {
                 board_state.local_row = *home_row;
                 board_state.distant_row = *away_row;
@@ -193,8 +240,13 @@ fn process_server_message(
                 RelSide::Same => board_state.local_state.timeline = vec,
                 RelSide::Other => board_state.distant_state.timeline = vec,
             },
-            ServerMsg::BeginSearch(vec) => todo!(),
-            ServerMsg::UpdateState(new_state) => *board_state = *new_state,
+            ServerMsg::BeginSearch(vec) => match current_scene {
+                Scene::LobbySelect(lobby_data) => todo!(),
+                Scene::Game(game_data) => game_data.seaching = vec,
+            },
+            ServerMsg::UpdateState(new_state) => {
+                *board_state = *new_state;
+            }
             ServerMsg::JoinedRoom(..) => panic!("??"),
             ServerMsg::RoomCreated => panic!("??"),
         }
@@ -210,32 +262,15 @@ fn process_server_message(
         ServerMsg::RoomCreated => (),
         ServerMsg::JoinedRoom(state) => {
             to_server.send(ClientMsg::PlayAs).unwrap();
-            to_server
-                .send(ClientMsg::SetDeck(
-                    DeckType::Main,
-                    VecDeque::from(vec![
-                        "Daemon".to_string(),
-                        "Daemon".to_string(),
-                        "Daemon".to_string(),
-                        "Daemon".to_string(),
-                        "Daemon".to_string(),
-                    ]),
-                ))
-                .unwrap();
-            to_server
-                .send(ClientMsg::SetDeck(
-                    DeckType::Blood,
-                    VecDeque::from(vec![
-                        "BloodFlask".to_string(),
-                        "BloodFlask".to_string(),
-                        "BloodFlask".to_string(),
-                        "BloodFlask".to_string(),
-                        "BloodFlask".to_string(),
-                        "BloodFlask".to_string(),
-                    ]),
-                ))
-                .unwrap();
-            *current_scene = Scene::Game(GameData { state: *state })
+            *current_scene = Scene::Game(GameData {
+                state: *state,
+                editing_deck: false,
+                deck: DeckType::Main,
+                marrow_main: String::new(),
+                marrow_blood: String::new(),
+                marrow_error: String::new(),
+                seaching: vec![],
+            })
         }
     }
 }
