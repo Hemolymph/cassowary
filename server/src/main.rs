@@ -37,6 +37,9 @@ impl GameId {
 
 type Global<T> = Arc<RwLock<T>>;
 type Players = Global<HashMap<PlayerId, Player>>;
+/// Using a Weak pointer since all the player tasks will be holding Arc pointers anyways.
+/// The Games struct should not be able to hold the GameHandle. Once all player tasks leave
+/// the game room should be dropped. This ensures that.
 type Games = Global<HashMap<GameId, Weak<GameHandle>>>;
 
 #[derive(Debug)]
