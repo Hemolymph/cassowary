@@ -263,7 +263,7 @@ fn board_row(
                         ui.set_max_height(CARD_HEIGHT);
                         ui.set_max_width(CARD_WIDTH);
                         ui.add(egui::Image::new(
-                            TEXTURES.read()[&ImageName::CardBg].clone(),
+                            TEXTURES.read().get_texture(ImageName::CardBg).clone(),
                         ));
                     });
                 }
@@ -291,7 +291,7 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
             ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
                 let (_, dropped) = ui.dnd_drop_zone::<PlaceFrom, _>(Frame::new(), |ui| {
                     let draw_button = ui.add(ImageButton::new(
-                        TEXTURES.read().get(&ImageName::CardBack).unwrap().clone(),
+                        TEXTURES.read().get_texture(ImageName::CardBack).clone(),
                     ));
                     if draw_button.clicked() {
                         to_server
@@ -313,7 +313,7 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                 }
                 let (_, dropped) = ui.dnd_drop_zone::<PlaceFrom, _>(Frame::new(), |ui| {
                     let draw_button = ui.add(ImageButton::new(
-                        TEXTURES.read().get(&ImageName::BloodBack).unwrap().clone(),
+                        TEXTURES.read().get_texture(ImageName::BloodBack).clone(),
                     ));
                     if draw_button.clicked() {
                         to_server
@@ -345,7 +345,7 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                             ui.set_max_height(CARD_HEIGHT);
                             ui.set_max_width(CARD_WIDTH);
                             ui.add(egui::Image::new(
-                                TEXTURES.read()[&ImageName::CardBg].clone(),
+                                TEXTURES.read().get_texture(ImageName::CardBg).clone(),
                             ));
                         });
                     }
@@ -371,7 +371,7 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                             ui.set_max_height(CARD_HEIGHT);
                             ui.set_max_width(CARD_WIDTH);
                             ui.add(egui::Image::new(
-                                TEXTURES.read()[&ImageName::CardBg].clone(),
+                                TEXTURES.read().get_texture(ImageName::CardBg).clone(),
                             ));
                         });
                     }

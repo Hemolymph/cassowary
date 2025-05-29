@@ -1,4 +1,5 @@
 mod scene;
+use egui_macroquad::egui;
 use egui_macroquad::egui::Context;
 use egui_macroquad::egui::ImageSource;
 use egui_macroquad::egui::TextureOptions;
@@ -78,14 +79,8 @@ impl<'a> Resources<'a> {
             .insert(ImageName::CardBg, include_image!("imgs/cardbg.png"));
     }
     fn set_texture(&mut self, path: String, ctx: &Context) {
-        let source = ImageSource::Uri(path.clone().into());
-        source
-            .clone()
-            .load(
-                ctx,
-                TextureOptions::default(),
-                egui_macroquad::egui::SizeHint::Scale(1.0.into()),
-            )
+        let source = ImageSource::Uri(get_filegarden_link(&path).into());
+        ctx.try_load_image(source.uri().unwrap(), egui::SizeHint::Scale(1.0.into()))
             .unwrap();
         self.textures.insert(ImageName::Name(path.clone()), source);
     }
@@ -133,7 +128,6 @@ async fn main() {
     let mut current_scene = Scene::LobbySelect(LobbyData {
         room: String::new(),
     });
-    let image = ImageSource::Uri(get_filegarden_link("BloodFlask").into());
 
     loop {
         if runtime_task.is_finished() {
