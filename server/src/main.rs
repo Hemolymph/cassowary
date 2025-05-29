@@ -1,6 +1,8 @@
 use rand::{rng, seq::SliceRandom};
 use serde_json::to_string_pretty;
+use shared::Find;
 use shared::{CardId, CardOrName, CardOrNameMut, NamedCardId};
+use std::sync::Weak;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     net::SocketAddr,
@@ -35,7 +37,7 @@ impl GameId {
 
 type Global<T> = Arc<RwLock<T>>;
 type Players = Global<HashMap<PlayerId, Player>>;
-type Games = Global<HashMap<GameId, GameHandle>>;
+type Games = Global<HashMap<GameId, Weak<GameHandle>>>;
 
 #[derive(Debug)]
 struct Game {
@@ -45,10 +47,12 @@ struct Game {
     away_player: Option<PlayerId>,
     spectators: Vec<PlayerId>,
     state: GameState,
-    owner: PlayerId,
 }
 
 impl Game {
+    fn is_desolate(&self) -> bool {
+        self.home_player.is_none() && self.away_player.is_none() && self.spectators.is_empty()
+    }
     fn add_card(&mut self, card: String) -> CardId {
         let id = CardId(self.next_id);
         self.cards.insert(id, card);
@@ -182,7 +186,7 @@ async fn after_stream_next(
     match msg {
         ClientMsg::JoinRoom(string) => {
             let games = games.read().await;
-            let game_handle = games.get(&GameId(string.clone()));
+            let game_handle = games.get(&GameId(string.clone())).and_then(|x| x.upgrade());
             *current_game_handle = game_handle.map(|x| PlayerGameHandle {
                 to_game: x.to_game.clone(),
                 game_broadcast: x.game_broadcast.subscribe(),
@@ -212,9 +216,15 @@ async fn after_stream_next(
                 game_broadcast: to_players.clone(),
             };
             let mut games = games.write().await;
-            if games.contains_key(&GameId(room.clone())) {
+            if games
+                .get(&GameId(room.clone()))
+                .and_then(|x| x.upgrade())
+                .is_some()
+            {
                 return Some(Err(ServerErr::RoomAlreadyExist));
             }
+            let handle = Arc::new(handle);
+            let handle = Arc::downgrade(&handle);
             games.insert(GameId(room), handle);
             tokio::spawn(room_task(player_id, from_player, to_players));
             *current_game_handle = Some(PlayerGameHandle {
@@ -234,6 +244,7 @@ async fn after_stream_next(
         ClientMsg::AddCounter(..) => None,
         ClientMsg::CreateCounter(..) => None,
         ClientMsg::FinishSearch => None,
+        ClientMsg::LeaveRoom => None,
     }
 }
 
@@ -250,17 +261,32 @@ async fn player_task(
             None => None.into(),
         };
         select! {
-            Some(Ok(msg)) = broadcast_fut => {
-                if let Destination::Player(recv_id) = msg.author {
-                    if player_id != recv_id {
-                        continue
-                    }
-                }
+            Some(msg) = broadcast_fut => {
+                match msg {
+                    Ok(msg) => {
+                        if let Destination::Player(recv_id) = msg.author {
+                            if player_id != recv_id {
+                                continue
+                            }
+                        }
 
-                ws_stream.send(Message::text(to_string_pretty(&msg.message).unwrap())).await.unwrap();
+                        ws_stream.send(Message::text(to_string_pretty(&msg.message).unwrap())).await.unwrap();
+                    },
+                    Err(x) => break,
+                }
             },
-            Some(Ok(msg)) = ws_stream.next() => {
-                let Some(result) = after_stream_next(player_id, msg, &games, &mut current_game_handle).await else { continue };
+            Some(msg) = ws_stream.next() => {
+                match msg {
+                    Ok(msg) => {
+                        let Some(result) = after_stream_next(player_id, msg, &games, &mut current_game_handle).await else { continue };
+                    },
+                    Err(x) => match &current_game_handle {
+                        Some(x) => {
+                            x.to_game.send(ClientMsg::LeaveRoom.sent_by(player_id)).unwrap();
+                        },
+                        None => break,
+                    },
+                }
             },
         }
     }
@@ -278,8 +304,8 @@ async fn room_task(
         away_player: None,
         spectators: vec![],
         state: GameState::default(),
-        owner: creator,
     };
+
     to_players
         .send(
             ServerMsg::JoinedRoom(Box::new(game.state.create_local_for(None, &game.cards)))
@@ -604,6 +630,19 @@ async fn room_task(
                             continue;
                         };
                         game.state.get_state_mut(local_side).searching = None;
+                    }
+                    ClientMsg::LeaveRoom => {
+                        match author_side {
+                            Some(Side::Home) => game.home_player = None,
+                            Some(Side::Away) => game.away_player = None,
+                            None => (),
+                        }
+
+                        game.spectators.find_remove(msg.author);
+
+                        if game.is_desolate() {
+                            break;
+                        }
                     }
                 }
             }

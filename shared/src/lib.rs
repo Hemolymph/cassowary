@@ -85,6 +85,7 @@ pub enum ClientMsg {
     AddCounter(PlaceFrom, String, bool),
     CreateCounter(PlaceFrom, String),
     FinishSearch,
+    LeaveRoom,
 }
 
 impl ClientMsg {
@@ -102,6 +103,7 @@ impl ClientMsg {
             ClientMsg::AddCounter(..) => true,
             ClientMsg::CreateCounter(..) => true,
             ClientMsg::FinishSearch => true,
+            ClientMsg::LeaveRoom => true,
         }
     }
 
@@ -119,6 +121,7 @@ impl ClientMsg {
             ClientMsg::AddCounter(..) => "add one to counter",
             ClientMsg::CreateCounter(..) => "create new counter",
             ClientMsg::FinishSearch => "done searching",
+            ClientMsg::LeaveRoom => "leaving room",
         }
     }
 }
@@ -809,7 +812,7 @@ impl<T> SafeRemove<T> for Vec<T> {
     }
 }
 
-trait Find<T, I> {
+pub trait Find<T, I> {
     fn find(&self, what: I) -> Option<&T>;
     fn find_mut(&mut self, what: I) -> Option<&mut T>;
     fn find_remove(&mut self, what: I) -> Option<T>;
