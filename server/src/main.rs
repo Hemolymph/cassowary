@@ -1,5 +1,6 @@
 use rand::{rng, seq::SliceRandom};
 use serde_json::to_string_pretty;
+use shared::{CardOrName, CardOrNameMut};
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
@@ -9,14 +10,14 @@ use tokio::{
     net::TcpStream,
     select,
     sync::{
-        RwLock, RwLockMappedWriteGuard, RwLockReadGuard, RwLockWriteGuard,
+        RwLock,
         broadcast::{self},
         mpsc,
     },
 };
 
 use futures::{SinkExt, StreamExt, future::OptionFuture};
-use shared::{Card, ClientMsg, DeckType, GameState, PlayerState, ServerErr, ServerMsg, Side};
+use shared::{ClientMsg, DeckType, GameState, PlayerState, ServerErr, ServerMsg, Side};
 use tokio::net::TcpListener;
 use tokio_websockets::{Message, ServerBuilder, WebSocketStream};
 
@@ -52,15 +53,6 @@ impl Game {
             Side::Away => self.away_player,
         }
     }
-    fn get_state(&self, id: PlayerId) -> Option<&PlayerState> {
-        if self.home_player.is_some_and(|x| x == id) {
-            Some(&self.state.home_state)
-        } else if self.away_player.is_some_and(|x| x == id) {
-            Some(&self.state.away_state)
-        } else {
-            None
-        }
-    }
     fn get_side(&self, id: PlayerId) -> Option<Side> {
         if self.home_player.is_some_and(|x| x == id) {
             Some(Side::Home)
@@ -70,32 +62,11 @@ impl Game {
             None
         }
     }
-    fn get_from_side(&self, side: Side) -> Option<&PlayerState> {
-        match side {
-            Side::Home => Some(&self.state.home_state),
-            Side::Away => Some(&self.state.away_state),
-        }
-    }
-    fn get_from_side_mut(&mut self, side: Side) -> Option<&mut PlayerState> {
-        match side {
-            Side::Home => Some(&mut self.state.home_state),
-            Side::Away => Some(&mut self.state.away_state),
-        }
-    }
     fn get_state_mut(&mut self, id: &PlayerId) -> Option<&mut PlayerState> {
         if self.home_player.is_some_and(|x| x == *id) {
             Some(&mut self.state.home_state)
         } else if self.away_player.is_some_and(|x| x == *id) {
             Some(&mut self.state.away_state)
-        } else {
-            None
-        }
-    }
-    fn get_other_state_mut(&mut self, id: &PlayerId) -> Option<&mut PlayerState> {
-        if self.home_player.is_some_and(|x| x == *id) {
-            Some(&mut self.state.away_state)
-        } else if self.away_player.is_some_and(|x| x == *id) {
-            Some(&mut self.state.home_state)
         } else {
             None
         }
@@ -248,6 +219,8 @@ async fn after_stream_next(
         ClientMsg::Update => None,
         ClientMsg::SetDeck(..) => None,
         ClientMsg::PlayAs => None,
+        ClientMsg::AddCounter(..) => None,
+        ClientMsg::CreateCounter(..) => None,
     }
 }
 
@@ -339,50 +312,14 @@ async fn room_task(
                             .unwrap();
                     }
                     ClientMsg::Move { from, to } => {
-                        let Some(player) = game.get_state_mut(&msg.author) else {
-                            to_players
-                                .send(ServerErr::NotInSide.to_player(msg.author))
-                                .unwrap();
-                            continue;
-                        };
                         let Some(local_side) = author_side else {
                             to_players
                                 .send(ServerErr::NotInSide.to_player(msg.author))
                                 .unwrap();
                             continue;
                         };
-                        let card = match from {
-                            shared::PlaceFrom::Hand(idx) => player.hand.safe_remove(idx),
-                            shared::PlaceFrom::Space(side, idx) => {
-                                game.state.get_row_mut(side.make_real(local_side))[idx]
-                                    .take()
-                                    .map(|x| x.name)
-                            }
-                            shared::PlaceFrom::Discard(side, idx) => game
-                                .state
-                                .get_state_mut(side.make_real(local_side))
-                                .discard
-                                .safe_remove(idx),
-                            shared::PlaceFrom::Aside(idx) => todo!("Aside is not yet implemented"),
-                            shared::PlaceFrom::Timeline(side, idx) => game
-                                .state
-                                .get_state_mut(side.make_real(local_side))
-                                .timeline
-                                .safe_remove(idx),
-                            shared::PlaceFrom::Deck(side, deck_type, idx) => {
-                                let side = side.make_real(local_side);
-                                let Some(player) = game.get_from_side_mut(side) else {
-                                    to_players
-                                        .send(ServerErr::NoPlayerInSide(side).to_all())
-                                        .unwrap();
-                                    continue;
-                                };
-                                match deck_type {
-                                    DeckType::Blood => player.blood_deck.remove(idx),
-                                    DeckType::Main => player.main_deck.remove(idx),
-                                }
-                            }
-                        };
+
+                        let card: Option<CardOrName> = game.state.pop_card(from, local_side);
 
                         let Some(card) = card else {
                             to_players
@@ -391,48 +328,7 @@ async fn room_task(
                             continue;
                         };
 
-                        let player = game
-                            .get_state_mut(&msg.author)
-                            .expect("Player is already known to exist from before");
-                        match to {
-                            shared::PlaceTo::Hand => player.hand.push(card),
-                            shared::PlaceTo::Space(side, space, flipped) => {
-                                game.state.get_row_mut(side.make_real(local_side))[space] =
-                                    Some(Card {
-                                        name: card,
-                                        backside: flipped,
-                                    })
-                            }
-                            shared::PlaceTo::Discard(side) => game
-                                .state
-                                .get_state_mut(side.make_real(local_side))
-                                .discard
-                                .push(card),
-                            shared::PlaceTo::Aside => todo!("Aside is not yet implemented"),
-                            shared::PlaceTo::Timeline(side) => game
-                                .state
-                                .get_state_mut(side.make_real(local_side))
-                                .timeline
-                                .push(card),
-                            shared::PlaceTo::Deck(deck_to, side, deck_type) => {
-                                let side = side.make_real(local_side);
-                                let Some(player) = game.get_from_side_mut(side) else {
-                                    to_players
-                                        .send(ServerErr::NoPlayerInSide(side).to_player(msg.author))
-                                        .unwrap();
-                                    continue;
-                                };
-                                let deck = match deck_type {
-                                    DeckType::Blood => &mut player.blood_deck,
-                                    DeckType::Main => &mut player.main_deck,
-                                };
-                                match deck_to {
-                                    shared::DeckTo::Top => deck.push_front(card),
-                                    shared::DeckTo::Bottom => deck.push_back(card),
-                                }
-                            }
-                            shared::PlaceTo::Liberate => (), // Do nothing. The card was removed earlier. Don't put it anywhere
-                        }
+                        game.state.push_card(card, to, local_side);
 
                         to_players
                             .send(
@@ -453,17 +349,6 @@ async fn room_task(
                                 )
                                 .unwrap();
                         }
-
-                        // for player in &game.spectators {
-                        //     to_players
-                        //         .send(
-                        //             ServerMsg::UpdateState(Box::new(
-                        //                 game.state.create_local_for(None),
-                        //             ))
-                        //             .to_player(*player),
-                        //         )
-                        //         .unwrap();
-                        // }
                     }
                     ClientMsg::Shuffle(deck) => {
                         let Some(state) = game.get_state_mut(&msg.author) else {
@@ -553,23 +438,62 @@ async fn room_task(
                             )
                             .unwrap();
                     }
+                    ClientMsg::AddCounter(from, counter, up) => {
+                        let Some(local_side) = author_side else {
+                            to_players
+                                .send(ServerErr::NotInSide.to_player(msg.author))
+                                .unwrap();
+                            continue;
+                        };
+                        let Some(CardOrNameMut::Card(card)) =
+                            game.state.get_card_mut(from, local_side)
+                        else {
+                            panic!();
+                        };
+
+                        let add = if up { 1 } else { -1 };
+
+                        let num = card.counters.entry(counter).or_insert(0);
+                        *num = num.saturating_add_signed(add);
+
+                        to_players
+                            .send(
+                                ServerMsg::UpdateState(Box::new(
+                                    game.state.create_local_for(Some(local_side)),
+                                ))
+                                .to_player(msg.author),
+                            )
+                            .unwrap();
+
+                        if let Some(other) = game.get_player(local_side.opposite()) {
+                            to_players
+                                .send(
+                                    ServerMsg::UpdateState(Box::new(
+                                        game.state.create_local_for(Some(local_side.opposite())),
+                                    ))
+                                    .to_player(other),
+                                )
+                                .unwrap();
+                        }
+                    }
+                    ClientMsg::CreateCounter(from, counter) => {
+                        let Some(local_side) = author_side else {
+                            to_players
+                                .send(ServerErr::NotInSide.to_player(msg.author))
+                                .unwrap();
+                            continue;
+                        };
+                        let Some(CardOrNameMut::Card(card)) =
+                            game.state.get_card_mut(from, local_side)
+                        else {
+                            panic!();
+                        };
+
+                        card.counters.entry(counter).or_insert(0);
+                    }
                 }
             }
             None => todo!("cave.ogg"),
-        }
-    }
-}
-
-trait SafeRemove<T> {
-    fn safe_remove(&mut self, idx: usize) -> Option<T>;
-}
-
-impl<T> SafeRemove<T> for Vec<T> {
-    fn safe_remove(&mut self, idx: usize) -> Option<T> {
-        if idx < self.len() {
-            Some(self.remove(idx))
-        } else {
-            None
         }
     }
 }

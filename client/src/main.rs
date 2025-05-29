@@ -1,5 +1,7 @@
 mod scene;
+use egui_macroquad::egui::Context;
 use egui_macroquad::egui::ImageSource;
+use egui_macroquad::egui::TextureOptions;
 use egui_macroquad::egui::ahash::HashMap;
 use egui_macroquad::egui::ahash::HashMapExt;
 use egui_macroquad::egui::include_image;
@@ -19,7 +21,7 @@ use tokio_websockets::Message;
 
 use futures::never::Never;
 use http::Uri;
-use shared::{ClientMsg, Side};
+use shared::ClientMsg;
 use shared::{ServerErr, ServerMsg};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -61,13 +63,58 @@ enum ImageName {
     Name(String),
 }
 
-static TEXTURES: LazyLock<RwLock<HashMap<ImageName, ImageSource>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+#[derive(Default)]
+struct Resources<'a> {
+    pub textures: HashMap<ImageName, ImageSource<'a>>,
+}
 
-#[macroquad::main("Cassowary")]
+impl<'a> Resources<'a> {
+    fn setup(&mut self) {
+        self.textures
+            .insert(ImageName::CardBack, include_image!("imgs/card_back.png"));
+        self.textures
+            .insert(ImageName::BloodBack, include_image!("imgs/flask_back.png"));
+        self.textures
+            .insert(ImageName::CardBg, include_image!("imgs/cardbg.png"));
+    }
+    fn set_texture(&mut self, path: String, ctx: &Context) {
+        let source = ImageSource::Uri(path.clone().into());
+        source
+            .clone()
+            .load(
+                ctx,
+                TextureOptions::default(),
+                egui_macroquad::egui::SizeHint::Scale(1.0.into()),
+            )
+            .unwrap();
+        self.textures.insert(ImageName::Name(path.clone()), source);
+    }
+    fn get_texture(&self, image: ImageName) -> &ImageSource<'a> {
+        self.textures
+            .get(&image)
+            .unwrap_or(self.textures.get(&ImageName::CardBack).unwrap())
+    }
+}
+
+static TEXTURES: LazyLock<RwLock<Resources>> = LazyLock::new(|| RwLock::new(Resources::default()));
+
+fn window_conf() -> Conf {
+    Conf {
+        window_title: "Cassowary".to_string(),
+        window_width: 1400,
+        window_height: 800,
+        ..Default::default()
+    }
+}
+
+#[macroquad::main(window_conf)]
 async fn main() {
     egui_macroquad::cfg(|ctx| {
         egui_extras::install_image_loaders(ctx);
+        let mut stp = TEXTURES.write();
+        stp.setup();
+        stp.set_texture("BloodFlask".to_string(), ctx);
+        stp.set_texture("Daemon".to_string(), ctx);
     });
     // Here to_serv and from_serv are actually using "serv" to refer to the networking tokio runtime.
     // That's is because the only reason you'd use these is to connect to the server.
@@ -86,25 +133,7 @@ async fn main() {
     let mut current_scene = Scene::LobbySelect(LobbyData {
         room: String::new(),
     });
-    TEXTURES
-        .write()
-        .insert(ImageName::CardBack, include_image!("imgs/card_back.png"));
-    TEXTURES
-        .write()
-        .insert(ImageName::BloodBack, include_image!("imgs/flask_back.png"));
-    TEXTURES
-        .write()
-        .insert(ImageName::CardBg, include_image!("imgs/cardbg.png"));
-
     let image = ImageSource::Uri(get_filegarden_link("BloodFlask").into());
-
-    TEXTURES
-        .write()
-        .insert(ImageName::Name("BloodFlask".to_string()), image);
-    let image = ImageSource::Uri(get_filegarden_link("Daemon").into());
-    TEXTURES
-        .write()
-        .insert(ImageName::Name("Daemon".to_string()), image);
 
     loop {
         if runtime_task.is_finished() {

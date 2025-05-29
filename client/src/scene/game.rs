@@ -2,7 +2,7 @@ use egui_macroquad::egui::{
     self, Context, CursorIcon, DragAndDrop, Frame, Id, ImageButton, InnerResponse, LayerId, Layout,
     Order, Response, Sense, UiBuilder, Vec2, Widget, emath::TSTransform,
 };
-use shared::{ClientMsg, DeckType, LocalState, PlaceFrom, RelSide, Space};
+use shared::{ClientMsg, DeckType, Hidden, LocalCard, LocalState, PlaceFrom, RelSide, Space};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{CARD_HEIGHT, CARD_WIDTH, HANDBAR_HEIGHT, ImageName, SIDEBAR_WIDTH, TEXTURES};
@@ -22,37 +22,42 @@ pub async fn draw_game(to_server: &UnboundedSender<ClientMsg>, data: &mut GameDa
     });
 }
 
-struct CardDisplay {
-    name: String,
+struct CardDisplay<'a> {
+    card: LocalCard,
     location: Option<PlaceFrom>,
+    sender: &'a UnboundedSender<ClientMsg>,
 }
 
-impl CardDisplay {
-    fn new<S: AsRef<str>>(name: S) -> Self {
+impl<'a> CardDisplay<'a> {
+    fn new<S: Into<LocalCard>>(name: S, sender: &'a UnboundedSender<ClientMsg>) -> Self {
         Self {
-            name: name.as_ref().to_string(),
+            card: name.into(),
             location: None,
+            sender,
         }
     }
 
     fn at_zone(self, zone: PlaceFrom) -> Self {
         Self {
-            name: self.name,
+            card: self.card,
             location: Some(zone),
+            ..self
         }
     }
 }
 
-impl Widget for CardDisplay {
+impl Widget for CardDisplay<'_> {
     fn ui(self, ui: &mut egui::Ui) -> Response {
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(CARD_WIDTH, CARD_HEIGHT), Sense::click());
 
         let image = {
             let a = TEXTURES.read();
-            a.get(&ImageName::Name(self.name))
-                .unwrap_or(a.get(&ImageName::CardBack).unwrap())
-                .clone()
+            if let Hidden::Unhidden(name) = self.card.name {
+                a.get_texture(ImageName::Name(name.clone())).clone()
+            } else {
+                a.get_texture(ImageName::CardBack).clone()
+            }
         };
 
         let response = response.on_hover_ui_at_pointer(|ui| {
@@ -60,42 +65,101 @@ impl Widget for CardDisplay {
         });
 
         response.context_menu(|ui| {
-            ui.label("Stats");
-            ui.horizontal(|ui| {
-                ui.button("-");
-                ui.button("+");
-                ui.label("DMG: 0");
-            });
-            ui.horizontal(|ui| {
-                ui.button("-");
-                ui.button("+");
-                ui.label("DEF: 0");
-            });
-            ui.horizontal(|ui| {
-                ui.button("-");
-                ui.button("+");
-                ui.label("POW: 0");
-            });
-            ui.label("Counters");
-            ui.horizontal(|ui| {
-                ui.button("-");
-                ui.button("+");
-                ui.label("RED: 0");
-            });
-            ui.horizontal(|ui| {
-                ui.button("-");
-                ui.button("+");
-                ui.label("BLUE: 0");
-            });
-            ui.horizontal(|ui| {
-                ui.button("-");
-                ui.button("+");
-                ui.label("YELLOW: 0");
-            });
+            let Some(location) = self.location else {
+                return;
+            };
+            if matches!(location, PlaceFrom::Space(..)) {
+                ui.label("Stats");
+                ui.horizontal(|ui| {
+                    ui.add(CounterButton {
+                        counter: "HP".to_owned(),
+                        to_server: self.sender,
+                        current: self.card.counters.get("HP").cloned().unwrap_or_default(),
+                        from: location,
+                    })
+                });
+                ui.horizontal(|ui| {
+                    ui.add(CounterButton {
+                        counter: "DEF".to_owned(),
+                        to_server: self.sender,
+                        current: self.card.counters.get("DEF").cloned().unwrap_or_default(),
+                        from: location,
+                    })
+                });
+                ui.add(CounterButton {
+                    counter: "POW".to_owned(),
+                    to_server: self.sender,
+                    current: self.card.counters.get("POW").cloned().unwrap_or_default(),
+                    from: location,
+                });
+            }
+            if !matches!(
+                location,
+                PlaceFrom::Hand(..)
+                    | PlaceFrom::Discard(..)
+                    | PlaceFrom::Deck(..)
+                    | PlaceFrom::Aside(..)
+            ) {
+                ui.label("Counters");
+                ui.add(CounterButton {
+                    counter: "RED".to_owned(),
+                    to_server: self.sender,
+                    current: self.card.counters.get("RED").cloned().unwrap_or_default(),
+                    from: location,
+                });
+                ui.add(CounterButton {
+                    counter: "GRE".to_owned(),
+                    to_server: self.sender,
+                    current: self.card.counters.get("GRE").cloned().unwrap_or_default(),
+                    from: location,
+                });
+                ui.add(CounterButton {
+                    counter: "BLU".to_owned(),
+                    to_server: self.sender,
+                    current: self.card.counters.get("BLU").cloned().unwrap_or_default(),
+                    from: location,
+                });
+                ui.add(CounterButton {
+                    counter: "BLA".to_owned(),
+                    to_server: self.sender,
+                    current: self.card.counters.get("BLA").cloned().unwrap_or_default(),
+                    from: location,
+                });
+            }
         });
 
         egui::Image::new(image.clone()).paint_at(ui, rect);
         response
+    }
+}
+
+struct CounterButton<'a> {
+    counter: String,
+    to_server: &'a UnboundedSender<ClientMsg>,
+    current: usize,
+    from: PlaceFrom,
+}
+
+impl Widget for CounterButton<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> Response {
+        ui.horizontal(|ui| {
+            let add = ui.button("+");
+            let rem = ui.button("-");
+            ui.label(format!("{}: {}", self.counter.to_uppercase(), self.current));
+
+            if add.clicked() {
+                self.to_server
+                    .send(ClientMsg::AddCounter(self.from, self.counter.clone(), true))
+                    .unwrap();
+            }
+
+            if rem.clicked() {
+                self.to_server
+                    .send(ClientMsg::AddCounter(self.from, self.counter, false))
+                    .unwrap();
+            }
+        })
+        .response
     }
 }
 
@@ -131,7 +195,7 @@ fn timeline(
                         let id = format!("timeline_{side:?}_{idx}").into();
                         let zone = PlaceFrom::Timeline(side, idx);
                         drag(ui, id, zone, |ui| {
-                            ui.add(CardDisplay::new(card).at_zone(zone))
+                            ui.add(CardDisplay::new(card, to_server).at_zone(zone))
                         });
                     }
                     ui.add_space(ui.available_width());
@@ -162,32 +226,61 @@ fn board_row(
     };
     for space in spaces {
         let frame = Frame::new();
-        let (_, dropped_item) = ui.dnd_drop_zone::<PlaceFrom, _>(frame, |ui| {
-            if let Some(card) = &data.state.get_row(side)[space] {
-                let id = format!("space_{side:?}_{space:?}").into();
-                let zone = PlaceFrom::Space(side, space);
-                drag(ui, id, PlaceFrom::Space(side, space), |ui| {
-                    ui.add(CardDisplay::new(card.name.clone()).at_zone(zone))
-                });
-            } else {
-                Frame::new().show(ui, |ui| {
-                    ui.set_max_height(CARD_HEIGHT);
-                    ui.set_max_width(CARD_WIDTH);
-                    ui.add(egui::Image::new(
-                        TEXTURES.read()[&ImageName::CardBg].clone(),
-                    ));
-                });
+        let mut text = String::from("Empty");
+        if let Some(card) = &data.state.get_row(side)[space] {
+            text = format!(
+                "{} / {} / {}",
+                card.counters
+                    .get("HP")
+                    .copied()
+                    .map(|x| x.to_string())
+                    .unwrap_or("X".to_string()),
+                card.counters
+                    .get("DEF")
+                    .copied()
+                    .map(|x| x.to_string())
+                    .unwrap_or("X".to_string()),
+                card.counters
+                    .get("POW")
+                    .copied()
+                    .map(|x| x.to_string())
+                    .unwrap_or("X".to_string()),
+            );
+        }
+        ui.vertical_centered(|ui| {
+            if side == RelSide::Other {
+                ui.label(text.clone());
+            }
+            let (_, dropped_item) = ui.dnd_drop_zone::<PlaceFrom, _>(frame, |ui| {
+                if let Some(card) = &data.state.get_row(side)[space] {
+                    let id = format!("space_{side:?}_{space:?}").into();
+                    let zone = PlaceFrom::Space(side, space);
+                    drag(ui, id, PlaceFrom::Space(side, space), |ui| {
+                        ui.add(CardDisplay::new(card.clone().to_local(), to_server).at_zone(zone))
+                    });
+                } else {
+                    Frame::new().show(ui, |ui| {
+                        ui.set_max_height(CARD_HEIGHT);
+                        ui.set_max_width(CARD_WIDTH);
+                        ui.add(egui::Image::new(
+                            TEXTURES.read()[&ImageName::CardBg].clone(),
+                        ));
+                    });
+                }
+            });
+
+            if let Some(dropped_item) = dropped_item {
+                to_server
+                    .send(ClientMsg::Move {
+                        from: *dropped_item,
+                        to: shared::PlaceTo::Space(side, space, false),
+                    })
+                    .unwrap();
+            }
+            if side == RelSide::Same {
+                ui.label(text);
             }
         });
-
-        if let Some(dropped_item) = dropped_item {
-            to_server
-                .send(ClientMsg::Move {
-                    from: *dropped_item,
-                    to: shared::PlaceTo::Space(side, space, true),
-                })
-                .unwrap();
-        }
     }
 }
 
@@ -245,7 +338,7 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                     if let Some(card) = data.state.local_state.discard.first() {
                         let zone = PlaceFrom::Discard(RelSide::Same, 0);
                         drag(ui, "discard".into(), zone, |ui| {
-                            ui.add(CardDisplay::new(card).at_zone(zone))
+                            ui.add(CardDisplay::new(card.clone(), to_server).at_zone(zone))
                         });
                     } else {
                         Frame::new().show(ui, |ui| {
@@ -271,7 +364,7 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                     if let Some(card) = data.state.distant_state.discard.first() {
                         let zone = PlaceFrom::Discard(RelSide::Other, 0);
                         drag(ui, "discard_away".into(), zone, |ui| {
-                            ui.add(CardDisplay::new(card).at_zone(zone))
+                            ui.add(CardDisplay::new(card.clone(), to_server).at_zone(zone))
                         });
                     } else {
                         Frame::new().show(ui, |ui| {
@@ -310,7 +403,9 @@ fn handbar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                         let zone = PlaceFrom::Hand(idx);
                         drag(ui, id, PlaceFrom::Hand(idx), |ui| {
                             Frame::new()
-                                .show(ui, |ui| ui.add(CardDisplay::new(card).at_zone(zone)))
+                                .show(ui, |ui| {
+                                    ui.add(CardDisplay::new(card.clone(), to_server).at_zone(zone))
+                                })
                                 .inner
                         });
                         // ui.dnd_drag_source(id, PlaceFrom::Hand(idx), |ui| {
