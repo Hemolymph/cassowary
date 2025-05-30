@@ -22,8 +22,8 @@ jobs:
         run: cargo build --release
 
       - name: Upload Artifact
-        working-directory: ./server
         uses: actions/upload-artifact@v4
+        working-directory: ./server
         with:
           name: linux-build
           path: target/release/hemolymph-server
