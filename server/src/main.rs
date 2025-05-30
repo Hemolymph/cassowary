@@ -55,7 +55,6 @@ struct Game {
 impl Game {
     fn update_all(&self, to_players: &broadcast::Sender<DestinedServerMsg>) {
         if let Some(player) = self.home_player {
-            println!("??");
             to_players
                 .send(
                     ServerMsg::UpdateState(Box::new(
@@ -258,9 +257,9 @@ async fn after_stream_next(
                 return Some(Err(ServerErr::RoomAlreadyExist));
             }
             let handle = Arc::new(handle);
-            let handle = Arc::downgrade(&handle);
-            games.insert(GameId(room.clone()), handle);
-            tokio::spawn(room_task(room, player_id, from_player, to_players));
+            let weak_handle = Arc::downgrade(&handle);
+            games.insert(GameId(room.clone()), weak_handle);
+            tokio::spawn(room_task(room, player_id, from_player, to_players, handle));
             *current_game_handle = Some(PlayerGameHandle {
                 to_game,
                 game_broadcast: from_game,
@@ -281,6 +280,8 @@ async fn after_stream_next(
         ClientMsg::LeaveRoom => None,
         ClientMsg::AddBlood(rel_side, _) => None,
         ClientMsg::EndTurn => None,
+        ClientMsg::AddHealth(_) => None,
+        ClientMsg::CreateCard(_) => None,
     }
 }
 
@@ -333,6 +334,7 @@ async fn room_task(
     creator: PlayerId,
     mut from_player: mpsc::UnboundedReceiver<AuthoredClientMsg>,
     to_players: broadcast::Sender<DestinedServerMsg>,
+    task: Arc<GameHandle>,
 ) {
     let mut game = Game {
         next_id: 0,
@@ -386,26 +388,7 @@ async fn room_task(
 
                         local_state.hand.push(card);
 
-                        to_players
-                            .send(
-                                ServerMsg::UpdateState(Box::new(
-                                    game.state.create_local_for(Some(local_side), &game.cards),
-                                ))
-                                .to_player(msg.author),
-                            )
-                            .unwrap();
-
-                        if let Some(other) = game.get_player(local_side.opposite()) {
-                            to_players
-                                .send(
-                                    ServerMsg::UpdateState(Box::new(game.state.create_local_for(
-                                        Some(local_side.opposite()),
-                                        &game.cards,
-                                    )))
-                                    .to_player(other),
-                                )
-                                .unwrap();
-                        }
+                        game.update_all(&to_players);
                     }
                     ClientMsg::Move { from, to } => {
                         let Some(local_side) = author_side else {
@@ -564,6 +547,7 @@ async fn room_task(
                     }
                     ClientMsg::PlayAs => {
                         let mut author_side = author_side;
+                        game.spectators.find_remove(msg.author);
                         if game.home_player.is_none() {
                             game.home_player = Some(msg.author);
                             author_side = Some(Side::Home);
@@ -571,6 +555,7 @@ async fn room_task(
                             game.away_player = Some(msg.author);
                             author_side = Some(Side::Away);
                         } else {
+                            game.spectators.push(msg.author);
                             to_players
                                 .send(ServerErr::GameIsFull.to_player(msg.author))
                                 .unwrap();
@@ -598,6 +583,14 @@ async fn room_task(
                     ClientMsg::JoinRoom(ref room) => {
                         if *room == id {
                             game.spectators.push(msg.author);
+                            to_players
+                                .send(
+                                    ServerMsg::JoinedRoom(Box::new(
+                                        game.state.create_local_for(author_side, &game.cards),
+                                    ))
+                                    .to_player(msg.author),
+                                )
+                                .unwrap();
                             to_players
                                 .send(
                                     ServerMsg::UpdateState(Box::new(
@@ -635,26 +628,7 @@ async fn room_task(
                         let num = card.counters.entry(counter).or_insert(0);
                         *num = num.saturating_add_signed(add);
 
-                        to_players
-                            .send(
-                                ServerMsg::UpdateState(Box::new(
-                                    game.state.create_local_for(Some(local_side), &game.cards),
-                                ))
-                                .to_player(msg.author),
-                            )
-                            .unwrap();
-
-                        if let Some(other) = game.get_player(local_side.opposite()) {
-                            to_players
-                                .send(
-                                    ServerMsg::UpdateState(Box::new(game.state.create_local_for(
-                                        Some(local_side.opposite()),
-                                        &game.cards,
-                                    )))
-                                    .to_player(other),
-                                )
-                                .unwrap();
-                        }
+                        game.update_all(&to_players);
                     }
                     ClientMsg::CreateCounter(from, counter) => {
                         let Some(local_side) = author_side else {
@@ -712,6 +686,29 @@ async fn room_task(
                         game.update_all(&to_players);
                     }
                     ClientMsg::EndTurn => todo!(),
+                    ClientMsg::AddHealth(up) => {
+                        let health = game.state.health;
+                        if up {
+                            game.state.health = health.saturating_add(1);
+                        } else {
+                            game.state.health = health.saturating_sub(1);
+                        }
+                        game.update_all(&to_players);
+                    }
+                    ClientMsg::CreateCard(card) => {
+                        let Some(local_side) = author_side else {
+                            to_players
+                                .send(ServerErr::NotInSide.to_player(msg.author))
+                                .unwrap();
+                            continue;
+                        };
+
+                        let card = game.add_card(card);
+                        let state = game.state.get_state_mut(local_side);
+                        state.hand.push(card);
+
+                        game.update_all(&to_players);
+                    }
                 }
             }
             None => panic!("cave.ogg"),

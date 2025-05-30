@@ -270,6 +270,7 @@ fn process_server_message(
                 marrow_blood: String::new(),
                 marrow_error: String::new(),
                 seaching: vec![],
+                creating: String::new(),
             })
         }
     }

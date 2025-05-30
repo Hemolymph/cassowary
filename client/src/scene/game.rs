@@ -1,8 +1,9 @@
 use std::collections::VecDeque;
 
 use egui_macroquad::egui::{
-    self, Context, CursorIcon, DragAndDrop, Frame, Id, ImageButton, InnerResponse, LayerId, Layout,
-    Order, Response, Sense, UiBuilder, Vec2, Widget, emath::TSTransform,
+    self, Align, Context, CursorIcon, Direction, DragAndDrop, Frame, Id, ImageButton,
+    InnerResponse, LayerId, Layout, Order, Response, Sense, UiBuilder, Vec2, Widget,
+    emath::TSTransform,
 };
 use macroquad::input::{KeyCode, is_key_down};
 use shared::{
@@ -24,6 +25,7 @@ pub struct GameData {
     pub marrow_blood: String,
     pub marrow_error: String,
     pub seaching: Vec<NamedCardId>,
+    pub creating: String,
 }
 
 pub async fn draw_game(to_server: &UnboundedSender<ClientMsg>, data: &mut GameData) {
@@ -45,6 +47,19 @@ pub async fn draw_game(to_server: &UnboundedSender<ClientMsg>, data: &mut GameDa
                         data.marrow_error = String::new();
                     }
                 });
+            });
+        });
+        egui::TopBottomPanel::bottom("bottombar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.text_edit_singleline(&mut data.creating);
+                if ui.button("Create Card").clicked() {
+                    let text = data.creating.trim();
+                    if !text.is_empty() {
+                        to_server
+                            .send(ClientMsg::CreateCard(text.to_owned()))
+                            .unwrap();
+                    }
+                }
             });
         });
         sidebar(ctx, to_server, data);
@@ -575,6 +590,21 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                     }
                     ui.label(format!("Blood: {}", data.state.local_state.blood));
                 });
+
+                ui.with_layout(
+                    Layout::bottom_up(Align::Center).with_main_justify(true),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.button("+").clicked() {
+                                to_server.send(ClientMsg::AddHealth(true)).unwrap();
+                            }
+                            if ui.button("-").clicked() {
+                                to_server.send(ClientMsg::AddHealth(false)).unwrap();
+                            }
+                            ui.label(format!("Health: {}", data.state.health));
+                        });
+                    },
+                );
             });
         });
 }

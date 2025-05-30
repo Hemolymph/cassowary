@@ -87,7 +87,9 @@ pub enum ClientMsg {
     FinishSearch,
     LeaveRoom,
     AddBlood(RelSide, bool),
+    AddHealth(bool),
     EndTurn,
+    CreateCard(String),
 }
 
 impl ClientMsg {
@@ -108,6 +110,8 @@ impl ClientMsg {
             ClientMsg::LeaveRoom => true,
             ClientMsg::AddBlood(rel_side, _) => true,
             ClientMsg::EndTurn => true,
+            ClientMsg::AddHealth(_) => true,
+            ClientMsg::CreateCard(_) => true,
         }
     }
 
@@ -128,6 +132,8 @@ impl ClientMsg {
             ClientMsg::LeaveRoom => "leaving room",
             ClientMsg::AddBlood(rel_side, _) => "add blood",
             ClientMsg::EndTurn => "end turn",
+            ClientMsg::AddHealth(_) => "add health",
+            ClientMsg::CreateCard(_) => "create card",
         }
     }
 }
@@ -264,13 +270,27 @@ impl Card {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GameState {
     pub home_state: PlayerState,
     pub away_state: PlayerState,
     pub home_row: Row,
     pub away_row: Row,
     pub floating_cards: Vec<(Card, (usize, usize))>,
+    pub health: usize,
+}
+
+impl Default for GameState {
+    fn default() -> Self {
+        Self {
+            home_state: PlayerState::default(),
+            away_state: PlayerState::default(),
+            home_row: Row::default(),
+            away_row: Row::default(),
+            floating_cards: Vec::default(),
+            health: 20,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -397,6 +417,7 @@ pub struct LocalState {
     pub distant_row: LocalRow,
     pub hand: Vec<NamedCardId>,
     pub floating_cards: Vec<(LocalCard, (usize, usize))>,
+    pub health: usize,
 }
 
 impl LocalState {
@@ -665,6 +686,7 @@ impl GameState {
                 })
                 .collect(),
             floating_cards: vec![],
+            health: self.health,
         }
     }
 
@@ -774,11 +796,11 @@ impl From<CardOrName> for Card {
     fn from(value: CardOrName) -> Card {
         match value {
             CardOrName::Card(card) => card,
-            CardOrName::Name(id) => dbg!(Card {
+            CardOrName::Name(id) => Card {
                 id,
                 backside: false,
                 counters: HashMap::new(),
-            }),
+            },
         }
     }
 }
