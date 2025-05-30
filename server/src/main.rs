@@ -320,6 +320,15 @@ async fn player_task(
                     Some(Ok(msg)) => {
                         if msg.is_close() {
                             eprintln!("Received close message");
+                            match &current_game_handle {
+                                Some(x) => {
+                                    eprintln!("player left room on close message");
+                                    x.to_game.send(ClientMsg::LeaveRoom.sent_by(player_id)).unwrap();
+                                },
+                                None => {
+                                    eprintln!("Player left room");
+                                },
+                            }
                             break;
                         }
                         let Some((result, task)) = after_stream_next(player_id, msg, &games, &mut current_game_handle).await else { continue };
@@ -329,7 +338,15 @@ async fn player_task(
                         }
                     },
                     None => {
-                        eprintln!("Safe disconnection happened");
+                        match &current_game_handle {
+                            Some(x) => {
+                                eprintln!("Player safely disconnected while in room");
+                                x.to_game.send(ClientMsg::LeaveRoom.sent_by(player_id)).unwrap();
+                            },
+                            None => {
+                                eprintln!("Player safely disconnedted outside of room");
+                            },
+                        }
                         break
                     },
                     Some(Err(err)) => match &current_game_handle {
