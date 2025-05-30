@@ -397,8 +397,55 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
     egui::SidePanel::left("sidebar")
         .default_width(SIDEBAR_WIDTH)
         .show(ctx, |ui| {
+            let (_, dropped_load) = ui.dnd_drop_zone::<PlaceFrom, _>(Frame::new(), |ui| {
+                if let Some(card) = data.state.distant_state.discard.first() {
+                    let zone = PlaceFrom::Discard(RelSide::Other, card.id);
+                    drag(ui, "discard_away".into(), zone, |ui| {
+                        ui.add(CardDisplay::new(card.clone(), to_server).at_zone(zone))
+                    });
+                } else {
+                    Frame::new().show(ui, |ui| {
+                        ui.set_max_height(CARD_HEIGHT);
+                        ui.set_max_width(CARD_WIDTH);
+                        ui.add(
+                            egui::Image::new(
+                                TEXTURES.read().get_texture(ImageName::CardBg).clone(),
+                            )
+                            .max_width(CARD_WIDTH)
+                            .max_height(CARD_HEIGHT),
+                        );
+                    });
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("+").clicked() {
+                    to_server
+                        .send(ClientMsg::AddBlood(RelSide::Other, true))
+                        .unwrap();
+                }
+                if ui.button("-").clicked() {
+                    to_server
+                        .send(ClientMsg::AddBlood(RelSide::Other, false))
+                        .unwrap();
+                }
+                ui.label(format!("Blood: {}", data.state.distant_state.blood));
+            });
+
+            if let Some(load) = dropped_load {
+                to_server
+                    .send(ClientMsg::Move {
+                        from: *load,
+                        to: shared::PlaceTo::Discard(RelSide::Other),
+                    })
+                    .unwrap();
+                if let Some(card) = data.state.pop_card(*load) {
+                    data.state
+                        .push_card(card, shared::PlaceTo::Discard(RelSide::Other));
+                }
+            }
             ui.with_layout(Layout::bottom_up(egui::Align::Center), |ui| {
                 let (_, dropped) = ui.dnd_drop_zone::<PlaceFrom, _>(Frame::new(), |ui| {
+                    ui.set_max_width(CARD_WIDTH);
                     let main_draw = ui.add(ImageButton::new(
                         TEXTURES
                             .read()
@@ -444,6 +491,7 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                     }
                 }
                 let (_, dropped) = ui.dnd_drop_zone::<PlaceFrom, _>(Frame::new(), |ui| {
+                    ui.set_max_width(CARD_WIDTH);
                     let blood_draw = ui.add(ImageButton::new(
                         TEXTURES
                             .read()
@@ -513,36 +561,20 @@ fn sidebar(ctx: &Context, to_server: &UnboundedSender<ClientMsg>, data: &mut Gam
                             .push_card(card, shared::PlaceTo::Discard(RelSide::Same));
                     }
                 }
-                ui.add_space(ui.available_height() - CARD_HEIGHT);
-                let (_, dropped_load) = ui.dnd_drop_zone::<PlaceFrom, _>(frame, |ui| {
-                    if let Some(card) = data.state.distant_state.discard.first() {
-                        let zone = PlaceFrom::Discard(RelSide::Other, card.id);
-                        drag(ui, "discard_away".into(), zone, |ui| {
-                            ui.add(CardDisplay::new(card.clone(), to_server).at_zone(zone))
-                        });
-                    } else {
-                        Frame::new().show(ui, |ui| {
-                            ui.set_max_height(CARD_HEIGHT);
-                            ui.set_max_width(CARD_WIDTH);
-                            ui.add(egui::Image::new(
-                                TEXTURES.read().get_texture(ImageName::CardBg).clone(),
-                            ));
-                        });
-                    }
-                });
 
-                if let Some(load) = dropped_load {
-                    to_server
-                        .send(ClientMsg::Move {
-                            from: *load,
-                            to: shared::PlaceTo::Discard(RelSide::Other),
-                        })
-                        .unwrap();
-                    if let Some(card) = data.state.pop_card(*load) {
-                        data.state
-                            .push_card(card, shared::PlaceTo::Discard(RelSide::Other));
+                ui.horizontal(|ui| {
+                    if ui.button("+").clicked() {
+                        to_server
+                            .send(ClientMsg::AddBlood(RelSide::Same, true))
+                            .unwrap();
                     }
-                }
+                    if ui.button("-").clicked() {
+                        to_server
+                            .send(ClientMsg::AddBlood(RelSide::Same, false))
+                            .unwrap();
+                    }
+                    ui.label(format!("Blood: {}", data.state.local_state.blood));
+                });
             });
         });
 }

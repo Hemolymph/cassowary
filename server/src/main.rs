@@ -53,6 +53,41 @@ struct Game {
 }
 
 impl Game {
+    fn update_all(&self, to_players: &broadcast::Sender<DestinedServerMsg>) {
+        if let Some(player) = self.home_player {
+            println!("??");
+            to_players
+                .send(
+                    ServerMsg::UpdateState(Box::new(
+                        self.state.create_local_for(Some(Side::Home), &self.cards),
+                    ))
+                    .to_player(player),
+                )
+                .unwrap();
+        }
+
+        if let Some(player) = self.away_player {
+            to_players
+                .send(
+                    ServerMsg::UpdateState(Box::new(
+                        self.state.create_local_for(Some(Side::Away), &self.cards),
+                    ))
+                    .to_player(player),
+                )
+                .unwrap();
+        }
+
+        for player in &self.spectators {
+            to_players
+                .send(
+                    ServerMsg::UpdateState(Box::new(
+                        self.state.create_local_for(Some(Side::Home), &self.cards),
+                    ))
+                    .to_player(*player),
+                )
+                .unwrap();
+        }
+    }
     fn is_desolate(&self) -> bool {
         self.home_player.is_none() && self.away_player.is_none() && self.spectators.is_empty()
     }
@@ -199,11 +234,7 @@ async fn after_stream_next(
                 Some(game_handle) => {
                     game_handle
                         .to_game
-                        .send(MaybeUpdate::Update.sent_by(player_id))
-                        .unwrap();
-                    game_handle
-                        .to_game
-                        .send(ClientMsg::Update.sent_by(player_id))
+                        .send(ClientMsg::JoinRoom(string).sent_by(player_id))
                         .unwrap();
                 }
                 None => return Some(Err(ServerErr::RoomDoesntExist(string))),
@@ -228,8 +259,8 @@ async fn after_stream_next(
             }
             let handle = Arc::new(handle);
             let handle = Arc::downgrade(&handle);
-            games.insert(GameId(room), handle);
-            tokio::spawn(room_task(player_id, from_player, to_players));
+            games.insert(GameId(room.clone()), handle);
+            tokio::spawn(room_task(room, player_id, from_player, to_players));
             *current_game_handle = Some(PlayerGameHandle {
                 to_game,
                 game_broadcast: from_game,
@@ -248,6 +279,8 @@ async fn after_stream_next(
         ClientMsg::CreateCounter(..) => None,
         ClientMsg::FinishSearch => None,
         ClientMsg::LeaveRoom => None,
+        ClientMsg::AddBlood(rel_side, _) => None,
+        ClientMsg::EndTurn => None,
     }
 }
 
@@ -296,6 +329,7 @@ async fn player_task(
 }
 
 async fn room_task(
+    id: String,
     creator: PlayerId,
     mut from_player: mpsc::UnboundedReceiver<AuthoredClientMsg>,
     to_players: broadcast::Sender<DestinedServerMsg>,
@@ -561,7 +595,19 @@ async fn room_task(
                             )
                             .unwrap();
                     }
-                    ClientMsg::JoinRoom(_) => {
+                    ClientMsg::JoinRoom(ref room) => {
+                        if *room == id {
+                            game.spectators.push(msg.author);
+                            to_players
+                                .send(
+                                    ServerMsg::UpdateState(Box::new(
+                                        game.state.create_local_for(None, &game.cards),
+                                    ))
+                                    .to_player(msg.author),
+                                )
+                                .unwrap();
+                            continue;
+                        }
                         to_players
                             .send(
                                 ServerErr::AlreadyInGame {
@@ -647,6 +693,25 @@ async fn room_task(
                             break;
                         }
                     }
+                    ClientMsg::AddBlood(rel_side, up) => {
+                        let Some(local_side) = author_side else {
+                            to_players
+                                .send(ServerErr::NotInSide.to_player(msg.author))
+                                .unwrap();
+                            continue;
+                        };
+
+                        let side = rel_side.make_real(local_side);
+
+                        let blood = game.state.get_state_mut(side).blood;
+                        if up {
+                            game.state.get_state_mut(side).blood = blood.saturating_add(1);
+                        } else {
+                            game.state.get_state_mut(side).blood = blood.saturating_sub(1);
+                        }
+                        game.update_all(&to_players);
+                    }
+                    ClientMsg::EndTurn => todo!(),
                 }
             }
             None => panic!("cave.ogg"),

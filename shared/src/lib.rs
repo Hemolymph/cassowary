@@ -86,6 +86,8 @@ pub enum ClientMsg {
     CreateCounter(PlaceFrom, String),
     FinishSearch,
     LeaveRoom,
+    AddBlood(RelSide, bool),
+    EndTurn,
 }
 
 impl ClientMsg {
@@ -104,6 +106,8 @@ impl ClientMsg {
             ClientMsg::CreateCounter(..) => true,
             ClientMsg::FinishSearch => true,
             ClientMsg::LeaveRoom => true,
+            ClientMsg::AddBlood(rel_side, _) => true,
+            ClientMsg::EndTurn => true,
         }
     }
 
@@ -122,6 +126,8 @@ impl ClientMsg {
             ClientMsg::CreateCounter(..) => "create new counter",
             ClientMsg::FinishSearch => "done searching",
             ClientMsg::LeaveRoom => "leaving room",
+            ClientMsg::AddBlood(rel_side, _) => "add blood",
+            ClientMsg::EndTurn => "end turn",
         }
     }
 }
