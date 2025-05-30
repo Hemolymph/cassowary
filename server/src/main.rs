@@ -319,6 +319,7 @@ async fn player_task(
                 match msg {
                     Some(Ok(msg)) => {
                         if msg.is_close() {
+                            eprintln!("Received close message");
                             break;
                         }
                         let Some((result, task)) = after_stream_next(player_id, msg, &games, &mut current_game_handle).await else { continue };
@@ -327,26 +328,27 @@ async fn player_task(
                             tasks.push(task);
                         }
                     },
-                    None => break,
+                    None => {
+                        eprintln!("Safe disconnection happened");
+                        break
+                    },
                     Some(Err(err)) => match &current_game_handle {
                         Some(x) => {
-                            println!("Player connection failed with {err:#?}");
+                            eprintln!("Player connection failed with {err:#?}");
                             x.to_game.send(ClientMsg::LeaveRoom.sent_by(player_id)).unwrap();
                             break;
                         },
-                        None => break,
+                        None => {
+                            eprintln!("2 Player connection failed with {err:#?}");
+                            break;
+                        },
                     },
                 }
             },
-            else => {
-                if let Some(x) = &current_game_handle {
-                    println!("Player is found to have left");
-                    x.to_game.send(ClientMsg::LeaveRoom.sent_by(player_id)).unwrap();
-                }
-                break;
-            },
         }
     }
+
+    eprintln!("Player task died");
 
     tasks
 }
