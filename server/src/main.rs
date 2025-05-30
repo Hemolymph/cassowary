@@ -8,6 +8,8 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
+use tokio::sync::broadcast::error::RecvError;
+use tokio::task::JoinHandle;
 use tokio::{
     net::TcpStream,
     select,
@@ -29,14 +31,7 @@ struct GameId(String);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct PlayerId(SocketAddr);
 
-impl GameId {
-    pub fn new() -> Self {
-        Self("aaaa".to_string())
-    }
-}
-
 type Global<T> = Arc<RwLock<T>>;
-type Players = Global<HashMap<PlayerId, Player>>;
 /// Using a Weak pointer since all the player tasks will be holding Arc pointers anyways.
 /// The Games struct should not be able to hold the GameHandle. Once all player tasks leave
 /// the game room should be dropped. This ensures that.
@@ -122,17 +117,13 @@ impl Game {
     }
 }
 
-struct Player {
-    game: Option<GameId>,
-    name: String,
-}
-
 struct GameHandle {
     to_game: mpsc::UnboundedSender<AuthoredClientMsg>,
     game_broadcast: broadcast::Sender<DestinedServerMsg>,
 }
 
 struct PlayerGameHandle {
+    _game: Arc<GameHandle>,
     to_game: mpsc::UnboundedSender<AuthoredClientMsg>,
     game_broadcast: broadcast::Receiver<DestinedServerMsg>,
 }
@@ -140,46 +131,46 @@ struct PlayerGameHandle {
 #[tokio::main]
 async fn main() {
     let listener = TcpListener::bind("127.0.0.2:3000").await.unwrap();
+    let mut tasks = vec![];
 
-    let players = Players::default();
     let games = Games::default();
     while let Ok((stream, addr)) = listener.accept().await {
         let (_request, ws_stream) = ServerBuilder::new().accept(stream).await.unwrap();
 
-        let player = Player {
-            game: None,
-            name: String::from("Not yet named"),
-        };
         let player_id = PlayerId(addr);
 
-        players.write().await.insert(player_id, player);
-
         let games = games.clone();
-        let players = players.clone();
-        tokio::spawn(player_task(player_id, ws_stream, players, games));
+        tasks.push(tokio::spawn(player_task(player_id, ws_stream, games)));
+    }
+
+    let join_all = futures::future::join_all(tasks).await;
+
+    let mut tasks = vec![];
+
+    for x in join_all {
+        match x {
+            Ok(mut x) => tasks.append(&mut x),
+            Err(x) => eprintln!("Player task failed with: {x:#?}"),
+        }
+    }
+
+    let join_all = futures::future::join_all(tasks).await;
+
+    for x in join_all {
+        match x {
+            Ok(()) => (),
+            Err(x) => eprintln!("Player subtask failed with: {x:#?}"),
+        }
     }
 }
 
 struct AuthoredClientMsg {
     author: PlayerId,
-    message: MaybeUpdate,
-}
-
-#[derive(Clone, Debug)]
-enum MaybeUpdate {
-    Update,
-    Msg(ClientMsg),
-}
-
-impl From<ClientMsg> for MaybeUpdate {
-    fn from(value: ClientMsg) -> Self {
-        Self::Msg(value)
-    }
+    message: ClientMsg,
 }
 
 #[derive(Clone, Copy, Debug)]
 enum Destination {
-    All,
     Player(PlayerId),
 }
 
@@ -195,7 +186,7 @@ async fn after_stream_next(
     msg: Message,
     games: &Games,
     current_game_handle: &mut Option<PlayerGameHandle>,
-) -> Option<Result<ServerMsg, ServerErr>> {
+) -> Option<(Result<ServerMsg, ServerErr>, Option<JoinHandle<()>>)> {
     if msg.is_close() {
         return None;
     }
@@ -212,9 +203,12 @@ async fn after_stream_next(
                 .send(msg.sent_by(player_id))
                 .unwrap();
         } else {
-            return Some(Err(ServerErr::NotInGame {
-                action: msg.get_name().to_owned(),
-            }));
+            return Some((
+                Err(ServerErr::NotInGame {
+                    action: msg.get_name().to_owned(),
+                }),
+                None,
+            ));
         }
 
         return None;
@@ -227,6 +221,7 @@ async fn after_stream_next(
             *current_game_handle = game_handle.map(|x| PlayerGameHandle {
                 to_game: x.to_game.clone(),
                 game_broadcast: x.game_broadcast.subscribe(),
+                _game: x,
             });
             drop(games);
             match current_game_handle {
@@ -236,7 +231,7 @@ async fn after_stream_next(
                         .send(ClientMsg::JoinRoom(string).sent_by(player_id))
                         .unwrap();
                 }
-                None => return Some(Err(ServerErr::RoomDoesntExist(string))),
+                None => return Some((Err(ServerErr::RoomDoesntExist(string)), None)),
             }
 
             None
@@ -254,18 +249,19 @@ async fn after_stream_next(
                 .and_then(|x| x.upgrade())
                 .is_some()
             {
-                return Some(Err(ServerErr::RoomAlreadyExist));
+                return Some((Err(ServerErr::RoomAlreadyExist), None));
             }
             let handle = Arc::new(handle);
             let weak_handle = Arc::downgrade(&handle);
             games.insert(GameId(room.clone()), weak_handle);
-            tokio::spawn(room_task(room, player_id, from_player, to_players, handle));
+            let task = tokio::spawn(room_task(room, player_id, from_player, to_players));
             *current_game_handle = Some(PlayerGameHandle {
                 to_game,
                 game_broadcast: from_game,
+                _game: handle,
             });
 
-            Some(Ok(ServerMsg::RoomCreated))
+            Some((Ok(ServerMsg::RoomCreated), Some(task)))
         }
         ClientMsg::RequestSearch(..) => None,
         ClientMsg::Draw(..) => None,
@@ -278,20 +274,20 @@ async fn after_stream_next(
         ClientMsg::CreateCounter(..) => None,
         ClientMsg::FinishSearch => None,
         ClientMsg::LeaveRoom => None,
-        ClientMsg::AddBlood(rel_side, _) => None,
+        ClientMsg::AddBlood(..) => None,
         ClientMsg::EndTurn => None,
-        ClientMsg::AddHealth(_) => None,
-        ClientMsg::CreateCard(_) => None,
+        ClientMsg::AddHealth(..) => None,
+        ClientMsg::CreateCard(..) => None,
     }
 }
 
 async fn player_task(
     player_id: PlayerId,
     mut ws_stream: WebSocketStream<TcpStream>,
-    players: Players,
     games: Games,
-) {
+) -> Vec<JoinHandle<()>> {
     let mut current_game_handle: Option<PlayerGameHandle> = None;
+    let mut tasks = vec![];
     loop {
         let broadcast_fut: OptionFuture<_> = match &mut current_game_handle {
             Some(a) => Some(a.game_broadcast.recv()).into(),
@@ -301,23 +297,34 @@ async fn player_task(
             Some(msg) = broadcast_fut => {
                 match msg {
                     Ok(msg) => {
-                        if let Destination::Player(recv_id) = msg.author {
-                            if player_id != recv_id {
-                                continue
-                            }
+                        let Destination::Player(recv_id) = msg.author;
+                        if player_id != recv_id {
+                            continue
                         }
 
                         ws_stream.send(Message::text(to_string_pretty(&msg.message).unwrap())).await.unwrap();
                     },
-                    Err(x) => break,
+                    Err(RecvError::Closed) => {
+                        current_game_handle = None;
+                    },
+                    Err(RecvError::Lagged(..)) => match &mut current_game_handle {
+                        Some(a) => {
+                            a.to_game.send(ClientMsg::Update.sent_by(player_id)).unwrap()
+                        },
+                        None => continue,
+                    },
                 }
             },
             Some(msg) = ws_stream.next() => {
                 match msg {
                     Ok(msg) => {
-                        let Some(result) = after_stream_next(player_id, msg, &games, &mut current_game_handle).await else { continue };
+                        let Some((result, task)) = after_stream_next(player_id, msg, &games, &mut current_game_handle).await else { continue };
+                        ws_stream.send(Message::text(to_string_pretty(&result).unwrap())).await.unwrap();
+                        if let Some(task) = task {
+                            tasks.push(task);
+                        }
                     },
-                    Err(x) => match &current_game_handle {
+                    Err(_) => match &current_game_handle {
                         Some(x) => {
                             x.to_game.send(ClientMsg::LeaveRoom.sent_by(player_id)).unwrap();
                         },
@@ -325,8 +332,11 @@ async fn player_task(
                     },
                 }
             },
+            else => {break},
         }
     }
+
+    tasks
 }
 
 async fn room_task(
@@ -334,7 +344,6 @@ async fn room_task(
     creator: PlayerId,
     mut from_player: mpsc::UnboundedReceiver<AuthoredClientMsg>,
     to_players: broadcast::Sender<DestinedServerMsg>,
-    task: Arc<GameHandle>,
 ) {
     let mut game = Game {
         next_id: 0,
@@ -355,22 +364,7 @@ async fn room_task(
         match from_player.recv().await {
             Some(msg) => {
                 let author_side = game.get_side(msg.author);
-                let message = match msg.message {
-                    MaybeUpdate::Update => {
-                        to_players
-                            .send(
-                                ServerMsg::JoinedRoom(Box::new(
-                                    game.state.create_local_for(author_side, &game.cards),
-                                ))
-                                .to_player(msg.author),
-                            )
-                            .unwrap();
-
-                        continue;
-                    }
-                    MaybeUpdate::Msg(msg) => msg,
-                };
-                match message {
+                match msg.message {
                     ClientMsg::Draw(deck_owner, which_deck) => {
                         let Some(local_side) = author_side else {
                             to_players
@@ -575,7 +569,7 @@ async fn room_task(
                         to_players
                             .send(
                                 ServerErr::AlreadyInGame {
-                                    action: message.get_name().to_string(),
+                                    action: msg.message.get_name().to_string(),
                                 }
                                 .to_player(msg.author),
                             )
@@ -605,7 +599,7 @@ async fn room_task(
                         to_players
                             .send(
                                 ServerErr::AlreadyInGame {
-                                    action: message.get_name().to_string(),
+                                    action: msg.message.get_name().to_string(),
                                 }
                                 .to_player(msg.author),
                             )
@@ -725,15 +719,6 @@ impl FromPlayer for ClientMsg {
     fn sent_by(self, player: PlayerId) -> AuthoredClientMsg {
         AuthoredClientMsg {
             author: player,
-            message: MaybeUpdate::Msg(self),
-        }
-    }
-}
-
-impl FromPlayer for MaybeUpdate {
-    fn sent_by(self, player: PlayerId) -> AuthoredClientMsg {
-        AuthoredClientMsg {
-            author: player,
             message: self,
         }
     }
@@ -741,7 +726,6 @@ impl FromPlayer for MaybeUpdate {
 
 trait ToPlayer {
     fn to_player(self, player: PlayerId) -> DestinedServerMsg;
-    fn to_all(self) -> DestinedServerMsg;
 }
 
 impl ToPlayer for ServerMsg {
@@ -751,26 +735,12 @@ impl ToPlayer for ServerMsg {
             message: Ok(self),
         }
     }
-
-    fn to_all(self) -> DestinedServerMsg {
-        DestinedServerMsg {
-            author: Destination::All,
-            message: Ok(self),
-        }
-    }
 }
 
 impl ToPlayer for ServerErr {
     fn to_player(self, player: PlayerId) -> DestinedServerMsg {
         DestinedServerMsg {
             author: Destination::Player(player),
-            message: Err(self),
-        }
-    }
-
-    fn to_all(self) -> DestinedServerMsg {
-        DestinedServerMsg {
-            author: Destination::All,
             message: Err(self),
         }
     }

@@ -18,6 +18,7 @@ use shrek_deck::tts::CardShape;
 use std::sync::LazyLock;
 use std::thread;
 use tokio::select;
+use tokio_websockets::Error;
 use tokio_websockets::Message;
 
 use futures::never::Never;
@@ -76,7 +77,7 @@ enum CommunicationError {
 enum ChannelError {
     LocalToNetworkClosed,
     NetworkToLocalClosed,
-    NetworkToServerError,
+    NetworkToServerError(Error),
 }
 
 #[derive(Debug)]
@@ -303,7 +304,7 @@ async fn game_rt(
                 let Some(message) = message else { return Err(ChannelError::LocalToNetworkClosed) };
                 let msg = serde_json::to_string_pretty(&message);
                 match msg {
-                    Ok(msg) => client.send(Message::text(msg)).await.map_err(|_| ChannelError::NetworkToServerError)?,
+                    Ok(msg) => client.send(Message::text(msg)).await.map_err(ChannelError::NetworkToServerError)?,
                     Err(_) => to_local
                         .send(Err(CommunicationError::SerdeSendError))
                         .map_err(|_| ChannelError::NetworkToLocalClosed)?,
