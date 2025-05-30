@@ -315,9 +315,9 @@ async fn player_task(
                     },
                 }
             },
-            Some(msg) = ws_stream.next() => {
+            msg = ws_stream.next() => {
                 match msg {
-                    Ok(msg) => {
+                    Some(Ok(msg)) => {
                         if msg.is_close() {
                             break;
                         }
@@ -327,7 +327,8 @@ async fn player_task(
                             tasks.push(task);
                         }
                     },
-                    Err(err) => match &current_game_handle {
+                    None => break,
+                    Some(Err(err)) => match &current_game_handle {
                         Some(x) => {
                             println!("Player connection failed with {err:#?}");
                             x.to_game.send(ClientMsg::LeaveRoom.sent_by(player_id)).unwrap();
