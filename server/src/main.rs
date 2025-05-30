@@ -408,6 +408,7 @@ async fn room_task(
                         };
 
                         game.state.push_card(card, to, local_side);
+                        println!("{:#?}", game.state);
 
                         if game.state.get_state(local_side).searching.is_some() {
                             to_players

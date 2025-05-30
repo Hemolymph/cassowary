@@ -245,6 +245,7 @@ fn process_server_message(
                 Scene::Game(game_data) => game_data.seaching = vec,
             },
             ServerMsg::UpdateState(new_state) => {
+                println!("{new_state:#?}");
                 *board_state = *new_state;
             }
             ServerMsg::JoinedRoom(..) => panic!("??"),
@@ -271,6 +272,7 @@ fn process_server_message(
                 marrow_error: String::new(),
                 seaching: vec![],
                 creating: String::new(),
+                viewing_aside: false,
             })
         }
     }

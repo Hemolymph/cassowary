@@ -278,6 +278,7 @@ pub struct GameState {
     pub away_row: Row,
     pub floating_cards: Vec<(Card, (usize, usize))>,
     pub health: usize,
+    pub aside: Vec<CardId>,
 }
 
 impl Default for GameState {
@@ -289,6 +290,7 @@ impl Default for GameState {
             away_row: Row::default(),
             floating_cards: Vec::default(),
             health: 20,
+            aside: Vec::default(),
         }
     }
 }
@@ -418,6 +420,7 @@ pub struct LocalState {
     pub hand: Vec<NamedCardId>,
     pub floating_cards: Vec<(LocalCard, (usize, usize))>,
     pub health: usize,
+    pub aside: Vec<NamedCardId>,
 }
 
 impl LocalState {
@@ -454,7 +457,7 @@ impl LocalState {
                 .discard
                 .find_remove(idx)
                 .map(Into::into),
-            PlaceFrom::Aside(idx) => todo!("Aside is not yet implemented"),
+            PlaceFrom::Aside(idx) => self.aside.find_remove(idx).map(Into::into),
             PlaceFrom::Timeline(side, idx) => self
                 .get_state_mut(side)
                 .timeline
@@ -471,7 +474,7 @@ impl LocalState {
                 self.get_row_mut(side)[space] = Some(card.flipped(flipped))
             }
             PlaceTo::Discard(side) => self.get_state_mut(side).discard.push(card.into()),
-            PlaceTo::Aside => todo!("Aside is not yet implemented"),
+            PlaceTo::Aside => (),
             PlaceTo::Timeline(side) => self.get_state_mut(side).timeline.push(card.into()),
             PlaceTo::Deck(deck_to, side, deck_type) => (),
             PlaceTo::Liberate => (), // Do nothing. The card was removed earlier. Don't put it anywhere
@@ -553,7 +556,7 @@ impl GameState {
                 .discard
                 .find_remove(idx)
                 .map(Into::into),
-            PlaceFrom::Aside(idx) => todo!("Aside is not yet implemented"),
+            PlaceFrom::Aside(idx) => self.aside.find_remove(idx).map(Into::into),
             PlaceFrom::Timeline(side, idx) => self
                 .get_state_mut(side.make_real(local_side))
                 .timeline
@@ -581,7 +584,7 @@ impl GameState {
                 .discard
                 .find(idx)
                 .map(Into::into),
-            PlaceFrom::Aside(idx) => todo!("Aside is not yet implemented"),
+            PlaceFrom::Aside(idx) => self.aside.find(idx).map(Into::into),
             PlaceFrom::Timeline(side, idx) => self
                 .get_state(side.make_real(local_side))
                 .timeline
@@ -613,7 +616,7 @@ impl GameState {
                 .discard
                 .find_mut(idx)
                 .map(Into::into),
-            PlaceFrom::Aside(idx) => todo!("Aside is not yet implemented"),
+            PlaceFrom::Aside(idx) => self.aside.find_mut(idx).map(Into::into),
             PlaceFrom::Timeline(side, idx) => self
                 .get_state_mut(side.make_real(local_side))
                 .timeline
@@ -640,7 +643,7 @@ impl GameState {
                 .get_state_mut(side.make_real(local_side))
                 .discard
                 .push(card.into()),
-            PlaceTo::Aside => todo!("Aside is not yet implemented"),
+            PlaceTo::Aside => self.aside.push(card.into()),
             PlaceTo::Timeline(side) => self
                 .get_state_mut(side.make_real(local_side))
                 .timeline
@@ -687,6 +690,15 @@ impl GameState {
                 .collect(),
             floating_cards: vec![],
             health: self.health,
+            aside: self
+                .aside
+                .clone()
+                .into_iter()
+                .map(|x| NamedCardId {
+                    name: ids.get(&x).unwrap().clone(),
+                    id: x,
+                })
+                .collect(),
         }
     }
 

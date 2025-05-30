@@ -1,9 +1,8 @@
 use std::collections::VecDeque;
 
 use egui_macroquad::egui::{
-    self, Align, Context, CursorIcon, Direction, DragAndDrop, Frame, Id, ImageButton,
-    InnerResponse, LayerId, Layout, Order, Response, Sense, UiBuilder, Vec2, Widget,
-    emath::TSTransform,
+    self, Align, Context, CursorIcon, DragAndDrop, Frame, Id, ImageButton, InnerResponse, LayerId,
+    Layout, Order, Response, Sense, UiBuilder, Vec2, Widget, emath::TSTransform,
 };
 use macroquad::input::{KeyCode, is_key_down};
 use shared::{
@@ -26,6 +25,7 @@ pub struct GameData {
     pub marrow_error: String,
     pub seaching: Vec<NamedCardId>,
     pub creating: String,
+    pub viewing_aside: bool,
 }
 
 pub async fn draw_game(to_server: &UnboundedSender<ClientMsg>, data: &mut GameData) {
@@ -59,6 +59,9 @@ pub async fn draw_game(to_server: &UnboundedSender<ClientMsg>, data: &mut GameDa
                             .send(ClientMsg::CreateCard(text.to_owned()))
                             .unwrap();
                     }
+                }
+                if ui.button("Aside").clicked() {
+                    data.viewing_aside = true;
                 }
             });
         });
@@ -106,6 +109,46 @@ pub async fn draw_game(to_server: &UnboundedSender<ClientMsg>, data: &mut GameDa
                                 .unwrap()
                         }
                     }
+                });
+        }
+
+        if data.viewing_aside {
+            egui::Window::new("Deck Editor")
+                .resizable(true)
+                .constrain(false)
+                .min_height(CARD_HEIGHT)
+                .open(&mut data.viewing_aside)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let (_, dropped) = ui.dnd_drop_zone::<PlaceFrom, _>(Frame::new(), |ui| {
+                            ui.set_min_height(CARD_HEIGHT);
+                            ui.set_min_width(400.);
+                            egui::Grid::new("asideview").show(ui, |ui| {
+                                for (idx, card) in data.state.aside.iter().enumerate() {
+                                    let id = format!("aside_{:?}", card.id).into();
+                                    let zone =
+                                        PlaceFrom::Deck(RelSide::Same, DeckType::Main, card.id);
+                                    drag(ui, id, zone, |ui| {
+                                        ui.add(
+                                            CardDisplay::new(card.clone(), to_server).at_zone(zone),
+                                        )
+                                    });
+                                    if idx % 8 == 7 {
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                        });
+
+                        if let Some(dropped) = dropped {
+                            to_server
+                                .send(ClientMsg::Move {
+                                    from: *dropped,
+                                    to: shared::PlaceTo::Aside,
+                                })
+                                .unwrap();
+                        }
+                    });
                 });
         }
 
