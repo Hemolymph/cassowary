@@ -1,0 +1,29 @@
+name: Build Server
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+          
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Bundle the app
+        working-directory: ./server
+        run: cargo build --release
+
+      - name: Upload Artifact
+        working-directory: ./server
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: target/release/hemolymph-server
