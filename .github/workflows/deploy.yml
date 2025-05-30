@@ -25,4 +25,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-build
-          path: ./server/target/release/hemolymph-server
+          path: ./target/release/hemolymph-server
