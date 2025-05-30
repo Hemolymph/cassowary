@@ -282,7 +282,7 @@ async fn game_rt(
     mut from_local: UnboundedReceiver<ClientMsg>,
     to_local: UnboundedSender<ComResult<Result<ServerMsg, ServerErr>>>,
 ) -> Result<Never, ChannelError> {
-    let uri = Uri::from_static("ws://127.0.0.1:3000");
+    let uri = Uri::from_static("ws://cassie.hemolymph.net:3001");
     let (mut client, _) = ClientBuilder::from_uri(uri).connect().await.unwrap();
 
     loop {
