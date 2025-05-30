@@ -318,6 +318,9 @@ async fn player_task(
             Some(msg) = ws_stream.next() => {
                 match msg {
                     Ok(msg) => {
+                        if msg.is_close() {
+                            break;
+                        }
                         let Some((result, task)) = after_stream_next(player_id, msg, &games, &mut current_game_handle).await else { continue };
                         ws_stream.send(Message::text(to_string_pretty(&result).unwrap())).await.unwrap();
                         if let Some(task) = task {
@@ -667,7 +670,8 @@ async fn room_task(
                         game.spectators.find_remove(msg.author);
 
                         if game.is_desolate() {
-                            println!("Room is not desolate.");
+                            println!("{game:#?}");
+                            println!("Room is desolate.");
                             break;
                         }
                     }
