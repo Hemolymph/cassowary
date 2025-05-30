@@ -139,7 +139,7 @@ struct PlayerGameHandle {
 
 #[tokio::main]
 async fn main() {
-    let listener = TcpListener::bind("127.0.0.1:3000").await.unwrap();
+    let listener = TcpListener::bind("127.0.0.2:3000").await.unwrap();
 
     let players = Players::default();
     let games = Games::default();
