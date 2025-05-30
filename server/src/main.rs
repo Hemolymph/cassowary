@@ -326,6 +326,7 @@ async fn player_task(
                     },
                     Err(_) => match &current_game_handle {
                         Some(x) => {
+                            println!("Player is found to have left");
                             x.to_game.send(ClientMsg::LeaveRoom.sent_by(player_id)).unwrap();
                         },
                         None => break,
@@ -649,6 +650,7 @@ async fn room_task(
                         game.state.get_state_mut(local_side).searching = None;
                     }
                     ClientMsg::LeaveRoom => {
+                        println!("Player is found to have left and the room is processing that.");
                         match author_side {
                             Some(Side::Home) => game.home_player = None,
                             Some(Side::Away) => game.away_player = None,
@@ -658,6 +660,7 @@ async fn room_task(
                         game.spectators.find_remove(msg.author);
 
                         if game.is_desolate() {
+                            println!("Room is not desolate.");
                             break;
                         }
                     }
