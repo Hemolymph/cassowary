@@ -328,19 +328,18 @@ async fn player_task(
                         Some(x) => {
                             println!("Player connection failed with {err:#?}");
                             x.to_game.send(ClientMsg::LeaveRoom.sent_by(player_id)).unwrap();
+                            break;
                         },
                         None => break,
                     },
                 }
             },
             else => {
-                match &current_game_handle {
-                    Some(x) => {
-                        println!("Player is found to have left");
-                        x.to_game.send(ClientMsg::LeaveRoom.sent_by(player_id)).unwrap();
-                    },
-                    None => break,
+                if let Some(x) = &current_game_handle {
+                    println!("Player is found to have left");
+                    x.to_game.send(ClientMsg::LeaveRoom.sent_by(player_id)).unwrap();
                 }
+                break;
             },
         }
     }
