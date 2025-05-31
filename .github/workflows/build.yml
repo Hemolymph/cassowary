@@ -54,7 +54,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "client_${{ runner.os }}"
+          shared-key: "client_${{ matrix.os }}"
 
       - name: Build client
         run: cargo build --release -p cassowary-client
@@ -63,4 +63,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cassowary-client_${{ runner.os }}
-          path: ./target/release/cassowary-server
+          path: |
+            ./target/release/cassowary-client
+            ./target/release/cassowary-client.exe
+          if-no-files-found: ignore
