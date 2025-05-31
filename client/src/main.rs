@@ -148,8 +148,8 @@ fn window_conf() -> Conf {
 
 async fn heartbeat(to_server: UnboundedSender<()>) {
     loop {
-        to_server.send(());
-        tokio::time::sleep(Duration::from_secs(10));
+        to_server.send(()).unwrap();
+        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
 
@@ -294,8 +294,8 @@ async fn game_rt(
     mut from_local: UnboundedReceiver<ClientMsg>,
     to_local: UnboundedSender<ComResult<Result<ServerMsg, ServerErr>>>,
 ) -> Result<Never, ChannelError> {
-    // let uri = Uri::from_static("ws://127.0.0.2:3000");
-    let uri = Uri::from_static("ws://cassie.hemolymph.net:3001");
+    let addr = std::option_env!("CASSIE_SERVER").unwrap_or("ws://cassie.hemolymph.net:3001");
+    let uri = Uri::from_static(addr);
     let (mut client, _) = ClientBuilder::from_uri(uri).connect().await.unwrap();
 
     loop {

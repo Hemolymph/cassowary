@@ -1,7 +1,8 @@
 use rand::{rng, seq::SliceRandom};
+use serde::{Deserialize, Serialize};
 use serde_json::to_string_pretty;
-use shared::Find;
-use shared::{CardId, CardOrName, CardOrNameMut, NamedCardId};
+use shared::{CardId, CardOrName, CardOrNameMut, NamedCardId, Turn, TurnStep};
+use shared::{Find, RelSide};
 use std::sync::Weak;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
@@ -278,7 +279,7 @@ async fn after_stream_next(
         ClientMsg::FinishSearch => None,
         ClientMsg::LeaveRoom => None,
         ClientMsg::AddBlood(..) => None,
-        ClientMsg::EndTurn => None,
+        ClientMsg::TurnSet(..) => None,
         ClientMsg::AddHealth(..) => None,
         ClientMsg::CreateCard(..) => None,
     }
@@ -716,7 +717,24 @@ async fn room_task(
                         }
                         game.update_all(&to_players);
                     }
-                    ClientMsg::EndTurn => todo!(),
+                    ClientMsg::TurnSet(new_turn) => {
+                        let Some(local_side) = author_side else {
+                            to_players
+                                .send(ServerErr::NotInSide.to_player(msg.author))
+                                .unwrap();
+                            continue;
+                        };
+
+                        let mut turn = Turn {
+                            whose: new_turn.whose.make_real(local_side),
+                            step: new_turn.step,
+                        };
+
+                        if turn.step == TurnStep::Switch {
+                            turn.whose = turn.whose.opposite();
+                            turn.step = TurnStep::Main;
+                        }
+                    }
                     ClientMsg::AddHealth(up) => {
                         let health = game.state.health;
                         if up {

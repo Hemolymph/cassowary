@@ -88,7 +88,7 @@ pub enum ClientMsg {
     LeaveRoom,
     AddBlood(RelSide, bool),
     AddHealth(bool),
-    EndTurn,
+    TurnSet(LocalTurn),
     CreateCard(String),
 }
 
@@ -108,10 +108,10 @@ impl ClientMsg {
             ClientMsg::CreateCounter(..) => true,
             ClientMsg::FinishSearch => true,
             ClientMsg::LeaveRoom => true,
-            ClientMsg::AddBlood(rel_side, _) => true,
-            ClientMsg::EndTurn => true,
-            ClientMsg::AddHealth(_) => true,
-            ClientMsg::CreateCard(_) => true,
+            ClientMsg::AddBlood(..) => true,
+            ClientMsg::TurnSet(..) => true,
+            ClientMsg::AddHealth(..) => true,
+            ClientMsg::CreateCard(..) => true,
         }
     }
 
@@ -131,7 +131,7 @@ impl ClientMsg {
             ClientMsg::FinishSearch => "done searching",
             ClientMsg::LeaveRoom => "leaving room",
             ClientMsg::AddBlood(rel_side, _) => "add blood",
-            ClientMsg::EndTurn => "end turn",
+            ClientMsg::TurnSet(..) => "end turn",
             ClientMsg::AddHealth(_) => "add health",
             ClientMsg::CreateCard(_) => "create card",
         }
@@ -270,6 +270,27 @@ impl Card {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TurnStep {
+    Start,
+    Main,
+    Combat,
+    End,
+    Switch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Turn {
+    pub whose: Side,
+    pub step: TurnStep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalTurn {
+    pub whose: RelSide,
+    pub step: TurnStep,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GameState {
     pub home_state: PlayerState,
@@ -279,6 +300,7 @@ pub struct GameState {
     pub floating_cards: Vec<(Card, (usize, usize))>,
     pub health: usize,
     pub aside: Vec<CardId>,
+    pub turn: Turn,
 }
 
 impl Default for GameState {
@@ -291,6 +313,10 @@ impl Default for GameState {
             floating_cards: Vec::default(),
             health: 20,
             aside: Vec::default(),
+            turn: Turn {
+                whose: Side::Home,
+                step: TurnStep::Main,
+            },
         }
     }
 }
@@ -421,6 +447,7 @@ pub struct LocalState {
     pub floating_cards: Vec<(LocalCard, (usize, usize))>,
     pub health: usize,
     pub aside: Vec<NamedCardId>,
+    pub turn: LocalTurn,
 }
 
 impl LocalState {
@@ -675,6 +702,12 @@ impl GameState {
         let local_row = self.get_row(side.unwrap_or(Side::Home));
         let away_row = self.get_row(side.unwrap_or(Side::Home).opposite());
 
+        let turn_side = if side.unwrap_or(Side::Home) == self.turn.whose {
+            RelSide::Same
+        } else {
+            RelSide::Other
+        };
+
         LocalState {
             local_state: local_state.create_local(ids),
             distant_state: away_state.create_local(ids),
@@ -699,6 +732,10 @@ impl GameState {
                     id: x,
                 })
                 .collect(),
+            turn: LocalTurn {
+                whose: turn_side,
+                step: self.turn.step,
+            },
         }
     }
 
