@@ -3,12 +3,10 @@ name: Build Server
 on:
   push:
     branches: [master]
-  pull_request:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -33,34 +31,34 @@ jobs:
         with:
           name: linux-build
           path: ./target/release/cassowary-server
+
   clients:
     runs-on: ${{matrix.os}}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
         
-      steps:
-        - name: Checkout code
-          uses: actions/checkout@v4
-
-          
-        - name: Set up Rust
-          uses: dtolnay/rust-toolchain@stable
-          with:
-            toolchain: 1.85.0
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
         
-        - uses: Swatinem/rust-cache@v2
-          with:
-            shared-key: "build"
-          
-        - name: Build client
-          working-directory: ./client
-          run: cargo build --release
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+      
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "build"
+        
+      - name: Build client
+        working-directory: ./client
+        run: cargo build --release
 
-          
-        - name: Upload Artifact
-          uses: actions/upload-artifact@v4
-          with:
-            name: linux-build
-            path: ./target/release/cassowary-client
+        
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: ./target/release/cassowary-client
 
