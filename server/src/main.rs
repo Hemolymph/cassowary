@@ -190,6 +190,9 @@ async fn after_stream_next(
     if msg.is_close() {
         return None;
     }
+    if msg.is_ping() {
+        return None;
+    }
     let msg = msg.as_text()?;
     let msg = match serde_json::from_str::<ClientMsg>(msg) {
         Ok(a) => a,

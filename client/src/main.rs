@@ -17,6 +17,7 @@ use shrek_deck::GetCardInfo;
 use shrek_deck::tts::CardShape;
 use std::sync::LazyLock;
 use std::thread;
+use std::time::Duration;
 use tokio::select;
 use tokio_websockets::Error;
 use tokio_websockets::Message;
@@ -145,6 +146,13 @@ fn window_conf() -> Conf {
     }
 }
 
+async fn heartbeat(to_server: UnboundedSender<()>) {
+    loop {
+        to_server.send(());
+        tokio::time::sleep(Duration::from_secs(10));
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     egui_macroquad::cfg(|ctx| {
@@ -158,13 +166,15 @@ async fn main() {
     // That's is because the only reason you'd use these is to connect to the server.
     // However I know I will get confused without these comments so have fun
     let (to_server, from_local) = tokio::sync::mpsc::unbounded_channel::<ClientMsg>();
+    let (to_server_ping, from_local_ping) = tokio::sync::mpsc::unbounded_channel::<()>();
     let (to_local, mut from_serv) =
         tokio::sync::mpsc::unbounded_channel::<ComResult<Result<ServerMsg, ServerErr>>>();
     let runtime_task = thread::spawn(|| {
         let Ok(rt) = runtime::Builder::new_current_thread().enable_all().build() else {
             return Err(NetRuntimeError::TokioBuildError);
         };
-        rt.block_on(game_rt(from_local, to_local))
+        rt.spawn(heartbeat(to_server_ping));
+        rt.block_on(game_rt(from_local_ping, from_local, to_local))
             .map_err(NetRuntimeError::ChannelError)
     });
 
@@ -280,6 +290,7 @@ fn process_server_message(
 }
 
 async fn game_rt(
+    mut from_local_ping: UnboundedReceiver<()>,
     mut from_local: UnboundedReceiver<ClientMsg>,
     to_local: UnboundedSender<ComResult<Result<ServerMsg, ServerErr>>>,
 ) -> Result<Never, ChannelError> {
@@ -289,6 +300,9 @@ async fn game_rt(
 
     loop {
         select! {
+            Some(()) = from_local_ping.recv() => {
+                client.send(Message::ping("ping!")).await.unwrap()
+            }
             Some(Ok(msg)) = client.next() => {
                 if msg.is_close() {
                     to_local.send(Err(CommunicationError::Closed)).unwrap();
