@@ -1,64 +1,66 @@
-name: Build Server
+on: [push, pull_request]
 
-on:
-  push:
-    branches: [master]
+name: Build
 
 jobs:
-  build:
+  server:
+    name: Build server
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-          
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.85.0
-        
+
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "build"
-          
-      - name: Build server
-        working-directory: ./server
-        run: cargo build --release
+          shared-key: "server"
 
-          
+      - name: Build server
+        run: cargo build --release -p cassowary-server
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-build
+          name: cassowary-server
           path: ./target/release/cassowary-server
 
-  clients:
-    runs-on: ${{matrix.os}}
+  client:
+    name: Build client
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
-        
+      fail-fast: false
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        
+
+      - name: Install packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get -yq --no-install-suggests --no-install-recommends install libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.85.0
-      
+
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "build"
-        
-      - name: Build client
-        working-directory: ./client
-        run: cargo build --release
+          shared-key: "client_${{ runner.os }}"
 
-        
-      - name: Upload Artifact
+      - name: Build client
+        run: cargo build --release -p cassowary-client
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-build
-          path: ./target/release/cassowary-client
-
+          name: cassowary-client_${{ runner.os }}
+          path: ./target/release/cassowary-server
