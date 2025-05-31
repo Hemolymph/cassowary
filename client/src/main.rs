@@ -14,7 +14,6 @@ use shared::DeckType;
 use shared::LocalDeckTop;
 use shared::RelSide;
 use shrek_deck::GetCardInfo;
-use shrek_deck::tts::CardShape;
 use std::sync::LazyLock;
 use std::thread;
 use std::time::Duration;
@@ -54,10 +53,6 @@ impl GetCardInfo for BloodlessCard {
 
     fn get_back_image(&self) -> Result<String, shrek_deck::CardError> {
         Ok("https://file.garden/ZJSEzoaUL3bz8vYK/bloodlesscards/00%20back.png".to_string())
-    }
-
-    fn get_card_shape(&self) -> Result<CardShape, shrek_deck::CardError> {
-        Ok(CardShape::RoundedRectangle)
     }
 
     fn parse(string: &str) -> Result<Self, shrek_deck::parser::ParseError> {
