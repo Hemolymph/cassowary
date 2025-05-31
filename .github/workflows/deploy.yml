@@ -23,7 +23,7 @@ jobs:
         with:
           shared-key: "build"
           
-      - name: Bundle the app
+      - name: Build server
         working-directory: ./server
         run: cargo build --release
 
@@ -33,3 +33,34 @@ jobs:
         with:
           name: linux-build
           path: ./target/release/cassowary-server
+  clients:
+    runs-on: ${{matrix.os}}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
+
+          
+        - name: Set up Rust
+          uses: dtolnay/rust-toolchain@stable
+          with:
+            toolchain: 1.85.0
+        
+        - uses: Swatinem/rust-cache@v2
+          with:
+            shared-key: "build"
+          
+        - name: Build client
+          working-directory: ./client
+          run: cargo build --release
+
+          
+        - name: Upload Artifact
+          uses: actions/upload-artifact@v4
+          with:
+            name: linux-build
+            path: ./target/release/cassowary-client
+
