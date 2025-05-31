@@ -92,6 +92,11 @@ enum ImageName {
     CardBack,
     CardBg,
     BloodBack,
+    StartTurnBtn,
+    MainPhaseBtn,
+    AttackPhaseBtn,
+    EndTurnBtn,
+    SwitchTurnBtn,
     Name(String),
 }
 
@@ -131,6 +136,11 @@ impl<'a> Resources<'a> {
             ImageName::BloodBack => include_image!("imgs/flask_back.png"),
             ImageName::CardBg => include_image!("imgs/cardbg.png"),
             ImageName::Name(path) => ImageSource::Uri(get_filegarden_link(&path).into()),
+            ImageName::StartTurnBtn => include_image!("imgs/turn_btn1.png"),
+            ImageName::MainPhaseBtn => include_image!("imgs/turn_btn2.png"),
+            ImageName::AttackPhaseBtn => include_image!("imgs/turn_btn3.png"),
+            ImageName::EndTurnBtn => include_image!("imgs/turn_btn4.png"),
+            ImageName::SwitchTurnBtn => include_image!("imgs/turn_btn5.png"),
         }
     }
 }
@@ -256,7 +266,6 @@ fn process_server_message(
                 Scene::Game(game_data) => game_data.seaching = vec,
             },
             ServerMsg::UpdateState(new_state) => {
-                println!("{new_state:#?}");
                 *board_state = *new_state;
             }
             ServerMsg::JoinedRoom(..) => panic!("??"),

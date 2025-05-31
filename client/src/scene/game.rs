@@ -1,12 +1,14 @@
 use std::collections::VecDeque;
 
 use egui_macroquad::egui::{
-    self, Align, Context, CursorIcon, DragAndDrop, Frame, Id, ImageButton, InnerResponse, LayerId,
-    Layout, Order, Response, Sense, UiBuilder, Vec2, Widget, emath::TSTransform,
+    self, Align, Color32, Context, CursorIcon, DragAndDrop, Frame, Id, ImageButton, InnerResponse,
+    LayerId, Layout, Order, Response, Sense, Style, Ui, UiBuilder, Vec2, Widget,
+    emath::TSTransform,
 };
 use macroquad::input::{KeyCode, is_key_down};
 use shared::{
     ClientMsg, DeckType, Hidden, LocalCard, LocalState, NamedCardId, PlaceFrom, RelSide, Space,
+    TurnStep,
 };
 use shrek_deck::parser::parse_line;
 use tokio::sync::mpsc::UnboundedSender;
@@ -49,6 +51,30 @@ pub async fn draw_game(to_server: &UnboundedSender<ClientMsg>, data: &mut GameDa
                 });
             });
         });
+        egui::SidePanel::left("turntracker")
+            .default_width(64.)
+            .resizable(false)
+            .show(ctx, |ui| {
+                let avh = ui.available_height();
+                ui.add_space((avh - 64. * 5.) / 2.);
+                ui.vertical_centered_justified(|ui| {
+                    for step in [
+                        TurnStep::Start,
+                        TurnStep::Main,
+                        TurnStep::Combat,
+                        TurnStep::End,
+                        TurnStep::Switch,
+                    ] {
+                        turn_button(
+                            ui,
+                            data.state.turn.whose,
+                            data.state.turn.step,
+                            step,
+                            to_server,
+                        );
+                    }
+                })
+            });
         egui::TopBottomPanel::bottom("bottombar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.text_edit_singleline(&mut data.creating);
@@ -178,6 +204,54 @@ pub async fn draw_game(to_server: &UnboundedSender<ClientMsg>, data: &mut GameDa
                 });
         }
     });
+}
+
+pub fn turn_button(
+    ui: &mut Ui,
+    current_side: RelSide,
+    current_step: TurnStep,
+    step: TurnStep,
+    to_server: &UnboundedSender<ClientMsg>,
+) {
+    let color = match current_step == step {
+        true => match current_side {
+            RelSide::Same => Color32::LIGHT_GREEN,
+            RelSide::Other => Color32::DARK_GREEN,
+        },
+        false => match current_side {
+            RelSide::Same => Color32::LIGHT_RED,
+            RelSide::Other => Color32::DARK_RED,
+        },
+    };
+
+    let old_style = Style::clone(ui.style());
+    let mut style = Style::clone(ui.style());
+    style.visuals.widgets.inactive.weak_bg_fill = color;
+    style.visuals.widgets.inactive.fg_stroke.color = Color32::BLACK;
+    let style = style;
+
+    ui.set_style(style);
+    let mut style = Style::clone(ui.style());
+    style.visuals.widgets.inactive.weak_bg_fill = color;
+    style.visuals.widgets.inactive.fg_stroke.color = Color32::BLACK;
+    let style = style;
+
+    ui.set_style(style);
+
+    let image = match step {
+        TurnStep::Start => TEXTURES.read().get_texture(ImageName::StartTurnBtn),
+        TurnStep::Main => TEXTURES.read().get_texture(ImageName::MainPhaseBtn),
+        TurnStep::Combat => TEXTURES.read().get_texture(ImageName::AttackPhaseBtn),
+        TurnStep::End => TEXTURES.read().get_texture(ImageName::EndTurnBtn),
+        TurnStep::Switch => TEXTURES.read().get_texture(ImageName::SwitchTurnBtn),
+    };
+
+    let btn = ImageButton::new(image).tint(color);
+
+    if ui.add(btn).clicked() {
+        to_server.send(ClientMsg::TurnSet(step)).unwrap();
+    }
+    ui.set_style(old_style);
 }
 
 struct CardDisplay<'a> {

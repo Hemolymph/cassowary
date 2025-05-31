@@ -88,7 +88,7 @@ pub enum ClientMsg {
     LeaveRoom,
     AddBlood(RelSide, bool),
     AddHealth(bool),
-    TurnSet(LocalTurn),
+    TurnSet(TurnStep),
     CreateCard(String),
 }
 
@@ -279,6 +279,18 @@ pub enum TurnStep {
     Switch,
 }
 
+impl TurnStep {
+    pub fn get_name(self) -> &'static str {
+        match self {
+            TurnStep::Start => "Start",
+            TurnStep::Main => "Main",
+            TurnStep::Combat => "Attack",
+            TurnStep::End => "End",
+            TurnStep::Switch => "Switch",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Turn {
     pub whose: Side,
@@ -315,7 +327,7 @@ impl Default for GameState {
             aside: Vec::default(),
             turn: Turn {
                 whose: Side::Home,
-                step: TurnStep::Main,
+                step: TurnStep::Start,
             },
         }
     }
@@ -814,6 +826,13 @@ impl RelSide {
         match self {
             RelSide::Same => local,
             RelSide::Other => local.opposite(),
+        }
+    }
+
+    pub fn opposite(self) -> Self {
+        match self {
+            RelSide::Same => Self::Other,
+            RelSide::Other => Self::Same,
         }
     }
 }
