@@ -16,11 +16,18 @@ jobs:
           
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
         
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "build"
+          
       - name: Bundle the app
         working-directory: ./server
         run: cargo build --release
 
+          
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
