@@ -8,6 +8,7 @@ use iced::Task;
 use iced::stream;
 use iced::widget::image::Handle;
 use iced::widget::text_input;
+use iced_drag::DragAndDrop;
 use tokio::sync::mpsc;
 // use scene::GameData;
 // use scene::LobbyData;
@@ -18,6 +19,7 @@ use shared::RelSide;
 use shrek_deck::GetCardInfo;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::sync::LazyLock;
 use std::thread;
 use std::time::Duration;
@@ -135,15 +137,26 @@ impl Resources {
             ImageName::CardBg,
             Handle::from_bytes(include_bytes!("imgs/cardbg.png").to_vec()),
         );
+        self.textures.insert(
+            ImageName::CardBack,
+            Handle::from_bytes(include_bytes!("imgs/card_back.png").to_vec()),
+        );
+        self.textures.insert(
+            ImageName::BloodBack,
+            Handle::from_bytes(include_bytes!("imgs/flask_back.png").to_vec()),
+        );
+        self.textures.insert(
+            ImageName::StartTurnBtn,
+            Handle::from_bytes(include_bytes!("imgs/turn_btn1.png").to_vec()),
+        );
     }
-    fn get_texture(&self, image: &ImageName, to_textures: &UnboundedSender<String>) -> Handle {
+    fn get_texture(&self, image: &ImageName) -> Handle {
         match image {
-            ImageName::Name(name) => self.textures.get(image).cloned().unwrap_or_else(|| {
-                if !self.loading.contains(name) {
-                    to_textures.send(name.to_string()).unwrap();
-                }
-                self.textures.get(&ImageName::CardBg).unwrap().clone()
-            }),
+            ImageName::Name(name) => self
+                .textures
+                .get(image)
+                .cloned()
+                .unwrap_or_else(|| self.textures.get(&ImageName::CardBg).unwrap().clone()),
             _ => self.textures.get(image).unwrap().clone(),
         }
     }
@@ -196,6 +209,7 @@ struct Cassowary {
     window: Window,
     to_server: Option<mpsc::UnboundedSender<ClientMsg>>,
     resources: Resources,
+    dragndrop: DragAndDrop,
 }
 
 impl Default for Cassowary {
@@ -206,6 +220,7 @@ impl Default for Cassowary {
             window: Window::Menu(MenuState::default()),
             to_server: None,
             resources,
+            dragndrop: Default::default(),
         }
     }
 }
@@ -259,12 +274,84 @@ fn update(state: &mut Cassowary, message: CassMessage) -> Task<CassMessage> {
         (CassMessage::ServerMsgRecv(server_msg), Window::Menu(menu_state)) => match server_msg {
             ServerMsg::RoomCreated => Task::none(),
             ServerMsg::JoinedRoom(local_state) => {
-                state.window = Window::Game(GameState { game: *local_state });
+                state
+                    .to_server
+                    .as_ref()
+                    .unwrap()
+                    .send(ClientMsg::PlayAs)
+                    .unwrap();
+
+                state
+                    .to_server
+                    .as_ref()
+                    .unwrap()
+                    .send(ClientMsg::SetDeck(
+                        DeckType::Main,
+                        VecDeque::from(vec![
+                            "Dog".to_string(),
+                            "Dog".to_string(),
+                            "Dog".to_string(),
+                        ]),
+                    ))
+                    .unwrap();
+                state
+                    .to_server
+                    .as_ref()
+                    .unwrap()
+                    .send(ClientMsg::SetDeck(
+                        DeckType::Blood,
+                        VecDeque::from(vec![
+                            "BloodFlask".to_string(),
+                            "BloodFlask".to_string(),
+                            "BloodFlask".to_string(),
+                        ]),
+                    ))
+                    .unwrap();
+                state.window = Window::Game(GameState {
+                    game: *local_state,
+                    searching: Vec::new(),
+                });
                 Task::none()
             }
             _ => panic!("Game action while out of game"),
         },
-        (CassMessage::ServerMsgRecv(server_msg), Window::Game(state)) => todo!(),
+        (CassMessage::ServerMsgRecv(server_msg), Window::Game(state)) => match server_msg {
+            ServerMsg::UpdateHand(vec, local_deck_top, local_deck_top1) => {
+                state.game.hand = vec;
+                state.game.local_state.main_deck_top = local_deck_top;
+                state.game.local_state.blood_deck_top = local_deck_top1;
+                Task::none()
+            }
+            ServerMsg::UpdateSpaces { home_row, away_row } => {
+                state.game.local_row = *home_row;
+                state.game.distant_row = *away_row;
+                Task::none()
+            }
+            ServerMsg::UpdateDiscard(rel_side, vec) => {
+                match rel_side {
+                    RelSide::Same => state.game.local_state.discard = vec,
+                    RelSide::Other => state.game.distant_state.discard = vec,
+                }
+                Task::none()
+            }
+            ServerMsg::UpdateTimeline(rel_side, vec) => {
+                match rel_side {
+                    RelSide::Same => state.game.local_state.timeline = vec,
+                    RelSide::Other => state.game.distant_state.timeline = vec,
+                }
+                Task::none()
+            }
+            ServerMsg::BeginSearch(vec) => {
+                state.searching = vec;
+                Task::none()
+            }
+            ServerMsg::UpdateState(local_state) => {
+                state.game = *local_state;
+                Task::none()
+            }
+            ServerMsg::RoomCreated => todo!(),
+            ServerMsg::JoinedRoom(local_state) => todo!(),
+        },
         (CassMessage::ServerErrRecv(server_err), _) => {
             println!("{server_err:?}");
             Task::none()
@@ -272,14 +359,22 @@ fn update(state: &mut Cassowary, message: CassMessage) -> Task<CassMessage> {
         (CassMessage::CommsError(communication_error), _) => todo!(),
         (CassMessage::Menu(message), Window::Game(state)) => todo!(),
         (CassMessage::Game(message), Window::Menu(state)) => todo!(),
-        (CassMessage::Game(message), Window::Game(state)) => match message {
-            GameMessage::Unimplemented => todo!(),
+        (CassMessage::Game(message), Window::Game(game_state)) => match message {
             GameMessage::LoadImage(image) => {
-                let image2 = image.clone();
-                Task::perform(
-                    async move { fetch_image(&image2).await.unwrap() },
-                    move |x| CassMessage::LoadedImage(image, Handle::from_bytes(x)),
-                )
+                let image_name = ImageName::Name(image.clone());
+                if !state.resources.textures.contains_key(&image_name) {
+                    let image2 = image.clone();
+                    Task::perform(
+                        async move { fetch_image(&image2).await.unwrap() },
+                        move |x| CassMessage::LoadedImage(image, Handle::from_bytes(x)),
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            GameMessage::ToServer(msg) => {
+                state.to_server.as_ref().unwrap().send(msg).unwrap();
+                Task::none()
             }
         },
         (CassMessage::LoadedImage(string, handle), _) => {
@@ -295,7 +390,9 @@ fn update(state: &mut Cassowary, message: CassMessage) -> Task<CassMessage> {
 fn view(state: &Cassowary) -> Element<CassMessage> {
     match &state.window {
         Window::Menu(state) => menu_view(state).map(CassMessage::Menu),
-        Window::Game(game_state) => game_view(game_state, &state.resources).map(CassMessage::Game),
+        Window::Game(game_state) => {
+            game_view(game_state, &state.resources, &state.dragndrop).map(CassMessage::Game)
+        }
     }
 }
 
@@ -316,7 +413,7 @@ fn network(state: &Cassowary) -> Subscription<CassMessage> {
             loop {
                 select! {
                     () = from_local_ping() => {
-                        client.send(Message::ping("ping!")).await.unwrap()
+                        client.send(Message::ping("ping!")).await.unwrap();
                     }
                     Some(Ok(msg)) = client.next() => {
                         if msg.is_close() {

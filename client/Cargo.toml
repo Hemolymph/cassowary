@@ -14,5 +14,6 @@ serde_json = {workspace = true}
 image = { version = "0.25.6", features = ["png"] }
 shrek-deck = "0.1.1"
 iced = { git = "https://github.com/iced-rs/iced.git", branch = "master", features = ["image", "tokio"] }
+iced-drag = { git = "https://github.com/lilith-in-starlight/iced-drag.git", branch = "master" }
 reqwest = { version = "0.12.18", features = ["json"] }
 
