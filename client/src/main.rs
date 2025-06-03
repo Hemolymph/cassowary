@@ -1,4 +1,5 @@
 // mod scene;
+mod widget;
 mod windows;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -7,7 +8,6 @@ use iced::Subscription;
 use iced::Task;
 use iced::stream;
 use iced::widget::image::Handle;
-use iced::widget::text_input;
 use iced_drag::DragAndDrop;
 use tokio::sync::mpsc;
 // use scene::GameData;
@@ -20,11 +20,8 @@ use shrek_deck::GetCardInfo;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::sync::LazyLock;
-use std::thread;
 use std::time::Duration;
 use tokio::select;
-use tokio::sync::RwLock;
 use tokio_websockets::Error;
 use tokio_websockets::Message;
 use windows::GameMessage;
@@ -38,14 +35,7 @@ use windows::menu_view;
 use http::Uri;
 use shared::ClientMsg;
 use shared::{ServerErr, ServerMsg};
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::mpsc::error::TryRecvError;
 use tokio_websockets::ClientBuilder;
-
-use tokio::{
-    runtime::{self},
-    sync::mpsc::UnboundedReceiver,
-};
 
 type ComResult<T> = Result<T, CommunicationError>;
 
@@ -148,6 +138,22 @@ impl Resources {
         self.textures.insert(
             ImageName::StartTurnBtn,
             Handle::from_bytes(include_bytes!("imgs/turn_btn1.png").to_vec()),
+        );
+        self.textures.insert(
+            ImageName::MainPhaseBtn,
+            Handle::from_bytes(include_bytes!("imgs/turn_btn2.png").to_vec()),
+        );
+        self.textures.insert(
+            ImageName::AttackPhaseBtn,
+            Handle::from_bytes(include_bytes!("imgs/turn_btn3.png").to_vec()),
+        );
+        self.textures.insert(
+            ImageName::EndTurnBtn,
+            Handle::from_bytes(include_bytes!("imgs/turn_btn4.png").to_vec()),
+        );
+        self.textures.insert(
+            ImageName::SwitchTurnBtn,
+            Handle::from_bytes(include_bytes!("imgs/turn_btn5.png").to_vec()),
         );
     }
     fn get_texture(&self, image: &ImageName) -> Handle {
