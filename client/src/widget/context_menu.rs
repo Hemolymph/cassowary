@@ -137,12 +137,8 @@ impl<Message, Theme, Renderer: iced::advanced::Renderer> Widget<Message, Theme, 
         if state.displaying {
             let overlay = (self.context_menu)();
             overlay.as_widget().diff(&mut tree.children[1]);
-            let a = ContextOverlay::new(
-                state.cursor_position,
-                &mut tree.children[1],
-                (self.context_menu)(),
-                state,
-            );
+            let a =
+                ContextOverlay::new(state.cursor_position, &mut tree.children[1], overlay, state);
             return Some(overlay::Element::new(Box::new(a)));
         }
 

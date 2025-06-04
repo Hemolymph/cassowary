@@ -7,6 +7,7 @@ use iced::Element;
 use iced::Subscription;
 use iced::Task;
 use iced::stream;
+use iced::widget::PickList;
 use iced::widget::image::Handle;
 use iced_drag::DragAndDrop;
 use tokio::sync::mpsc;

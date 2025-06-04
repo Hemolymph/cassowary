@@ -1,5 +1,5 @@
 use iced::{
-    Element, Point, Size,
+    Element, Point, Size, Vector,
     advanced::{
         Layout, Overlay,
         graphics::core::widget,
@@ -41,7 +41,8 @@ impl<Message, Theme, Renderer: iced::advanced::Renderer> Overlay<Message, Theme,
             position.y = f32::max(0.0, position.y - content.size().height);
         }
 
-        content.move_to(position)
+        Node::with_children(content.size(), vec![content])
+            .translate(Vector::new(position.x, position.y))
     }
 
     fn draw(
@@ -82,9 +83,15 @@ impl<Message, Theme, Renderer: iced::advanced::Renderer> Overlay<Message, Theme,
         //     .draw(self.tree, renderer, theme, style, layout, cursor, &bounds);
 
         renderer.with_layer(layout.bounds(), |renderer| {
-            self.content
-                .as_widget()
-                .draw(self.tree, renderer, theme, style, layout, cursor, &bounds);
+            self.content.as_widget().draw(
+                self.tree,
+                renderer,
+                theme,
+                style,
+                layout.children().next().unwrap(),
+                cursor,
+                &bounds,
+            );
         });
     }
 
@@ -97,32 +104,37 @@ impl<Message, Theme, Renderer: iced::advanced::Renderer> Overlay<Message, Theme,
         clipboard: &mut dyn iced::advanced::Clipboard,
         shell: &mut iced::advanced::Shell<'_, Message>,
     ) {
-        let mut forward_event_to_children = true;
+        let mut tranfer_to_children = true;
+
+        let layout_children = layout.children().next().unwrap();
 
         match event {
             iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) => {
                 if *key == Key::Named(iced::keyboard::key::Named::Escape) {
                     self.state.displaying = false;
+                    tranfer_to_children = false;
                     shell.capture_event();
-                    forward_event_to_children = false;
                     shell.request_redraw();
                 }
             }
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
-                if !cursor.is_over(layout.bounds()) {
+                if !cursor.is_over(layout_children.bounds()) {
                     self.state.displaying = false;
-                    forward_event_to_children = false;
-                    shell.request_redraw();
+                    // shell.request_redraw();
                 }
             }
             _ => {}
         }
 
-        if forward_event_to_children {
+        if shell.is_event_captured() {
+            return;
+        }
+
+        if tranfer_to_children {
             self.content.as_widget_mut().update(
                 self.tree,
                 event,
-                layout,
+                layout_children,
                 cursor,
                 renderer,
                 clipboard,
@@ -140,7 +152,7 @@ impl<Message, Theme, Renderer: iced::advanced::Renderer> Overlay<Message, Theme,
     ) -> iced::advanced::mouse::Interaction {
         self.content.as_widget().mouse_interaction(
             self.tree,
-            layout,
+            layout.children().next().unwrap(),
             cursor,
             &layout.bounds(),
             renderer,
@@ -153,9 +165,12 @@ impl<Message, Theme, Renderer: iced::advanced::Renderer> Overlay<Message, Theme,
         renderer: &Renderer,
         operation: &mut dyn widget::Operation<()>,
     ) {
-        self.content
-            .as_widget_mut()
-            .operate(self.tree, layout, renderer, operation);
+        self.content.as_widget_mut().operate(
+            self.tree,
+            layout.children().next().unwrap(),
+            renderer,
+            operation,
+        );
     }
 }
 
