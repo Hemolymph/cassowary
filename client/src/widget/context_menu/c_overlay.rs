@@ -1,6 +1,11 @@
 use iced::{
     Element, Point, Size,
-    advanced::{Overlay, layout, widget::Tree},
+    advanced::{
+        Layout, Overlay,
+        graphics::core::widget,
+        layout::{self, Node},
+        widget::Tree,
+    },
     keyboard::Key,
 };
 
@@ -72,9 +77,15 @@ impl<Message, Theme, Renderer: iced::advanced::Renderer> Overlay<Message, Theme,
         //     .expect("widget: Layout should have a content layout.");
 
         // Modal
-        self.content
-            .as_widget()
-            .draw(self.tree, renderer, theme, style, layout, cursor, &bounds);
+        // self.content
+        //     .as_widget()
+        //     .draw(self.tree, renderer, theme, style, layout, cursor, &bounds);
+
+        renderer.with_layer(layout.bounds(), |renderer| {
+            self.content
+                .as_widget()
+                .draw(self.tree, renderer, theme, style, layout, cursor, &bounds);
+        });
     }
 
     fn update(
@@ -86,37 +97,65 @@ impl<Message, Theme, Renderer: iced::advanced::Renderer> Overlay<Message, Theme,
         clipboard: &mut dyn iced::advanced::Clipboard,
         shell: &mut iced::advanced::Shell<'_, Message>,
     ) {
-        self.content.as_widget_mut().update(
-            self.tree,
-            event,
-            layout,
-            cursor,
-            renderer,
-            clipboard,
-            shell,
-            &layout.bounds(),
-        );
-
-        if shell.is_event_captured() {
-            return;
-        }
+        let mut forward_event_to_children = true;
 
         match event {
             iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) => {
                 if *key == Key::Named(iced::keyboard::key::Named::Escape) {
                     self.state.displaying = false;
                     shell.capture_event();
+                    forward_event_to_children = false;
                     shell.request_redraw();
                 }
             }
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
                 if !cursor.is_over(layout.bounds()) {
                     self.state.displaying = false;
+                    forward_event_to_children = false;
                     shell.request_redraw();
                 }
             }
             _ => {}
         }
+
+        if forward_event_to_children {
+            self.content.as_widget_mut().update(
+                self.tree,
+                event,
+                layout,
+                cursor,
+                renderer,
+                clipboard,
+                shell,
+                &layout.bounds(),
+            );
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: layout::Layout<'_>,
+        cursor: iced::advanced::mouse::Cursor,
+        renderer: &Renderer,
+    ) -> iced::advanced::mouse::Interaction {
+        self.content.as_widget().mouse_interaction(
+            self.tree,
+            layout,
+            cursor,
+            &layout.bounds(),
+            renderer,
+        )
+    }
+
+    fn operate(
+        &mut self,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn widget::Operation<()>,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(self.tree, layout, renderer, operation);
     }
 }
 
